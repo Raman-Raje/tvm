@@ -14,7 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
 if(USE_OPENCL)
   tvm_file_glob(GLOB RUNTIME_OPENCL_SRCS src/backend/opencl/runtime/*.cc)
 
@@ -48,6 +47,14 @@ if(USE_OPENCL)
   target_link_libraries(tvm_runtime_opencl PUBLIC tvm_runtime ${_opencl_libs})
   tvm_configure_target_library(tvm_runtime_opencl RUNTIME_MODULE)
 
+  if(Build_GTests)
+    message(STATUS "Building OpenCL GTests")
+    tvm_file_glob(GLOB_RECURSE OPENCL_TEST_SRCS "tests/cpp-runtime/opencl/*.cc")
+    add_executable(opencl-cpptest ${OPENCL_TEST_SRCS})
+    target_link_libraries(opencl-cpptest PRIVATE gtest_main tvm_runtime_opencl)
+  else()
+    message(STATUS "Couldn't build OpenCL-Gtests")
+  endif()
   if(USE_OPENCL_ENABLE_HOST_PTR)
     add_definitions(-DOPENCL_ENABLE_HOST_PTR)
   endif(USE_OPENCL_ENABLE_HOST_PTR)

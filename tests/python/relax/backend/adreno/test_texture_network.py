@@ -25,7 +25,7 @@ import pytest
 pytest.importorskip("onnx")
 
 import onnx
-from utils import verify_results
+from utils import parametrize_targets, verify_results
 
 import tvm
 import tvm.testing
@@ -38,14 +38,15 @@ from tvm.script import tirx as T
 from tvm.script.ir_builder import IRBuilder
 from tvm.script.ir_builder import relax as relax_builder
 
-TARGETS = [tvm.target.Target("qcom/adreno-opencl-texture")]
+TARGETS = [
+    tvm.target.Target("qcom/adreno-opencl-texture"),
+    tvm.target.Target("qcom/adreno-vulkan-texture"),
+]
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not tvm.testing.device_enabled(TARGETS[0]), reason="opencl not enabled")
-def test_network_resnet():
-    target = TARGETS[0]
-
+@parametrize_targets(TARGETS)
+def test_network_resnet(target):
     @I.ir_module
     class Resnet:
         @R.function

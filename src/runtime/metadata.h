@@ -65,6 +65,7 @@ class FunctionInfoObj : public ffi::Object {
  public:
   ffi::String name;
   ffi::Array<DLDataType> arg_types;
+  ffi::Array<ffi::String> storage_scopes;
   ffi::Array<ffi::String> launch_param_tags;
   ffi::Array<ArgExtraTags> arg_extra_tags;
 
@@ -77,6 +78,11 @@ class FunctionInfoObj : public ffi::Object {
       sarg_types.push_back(ffi::String(ffi::DLDataTypeToString(t)));
     }
     obj.Set("arg_types", std::move(sarg_types));
+    {
+      json::Array scopes;
+      for (const auto& s : storage_scopes) scopes.push_back(s);
+      obj.Set("storage_scopes", std::move(scopes));
+    }
     {
       json::Array tags;
       for (const auto& s : launch_param_tags) tags.push_back(s);
@@ -98,6 +104,12 @@ class FunctionInfoObj : public ffi::Object {
     for (size_t i = 0; i < sarg_types_arr.size(); ++i) {
       arg_types.push_back(
           ffi::StringToDLDataType(std::string(sarg_types_arr[i].cast<ffi::String>())));
+    }
+    auto ss = src.find("storage_scopes");
+    if (ss != src.end()) {
+      auto arr = (*ss).second.cast<json::Array>();
+      storage_scopes = ffi::Array<ffi::String>();
+      for (const auto& elem : arr) storage_scopes.push_back(elem.cast<ffi::String>());
     }
     auto lt = src.find("launch_param_tags");
     if (lt != src.end()) {
@@ -128,10 +140,12 @@ class FunctionInfoObj : public ffi::Object {
 class FunctionInfo : public ffi::ObjectRef {
  public:
   FunctionInfo(ffi::String name, ffi::Array<DLDataType> arg_types,
-               ffi::Array<ffi::String> launch_param_tags, ffi::Array<ArgExtraTags> arg_extra_tags) {
+               ffi::Array<ffi::String> launch_param_tags, ffi::Array<ArgExtraTags> arg_extra_tags,
+               ffi::Array<ffi::String> storage_scopes = {}) {
     auto n = ffi::make_object<FunctionInfoObj>();
     n->name = std::move(name);
     n->arg_types = std::move(arg_types);
+    n->storage_scopes = std::move(storage_scopes);
     n->launch_param_tags = std::move(launch_param_tags);
     n->arg_extra_tags = std::move(arg_extra_tags);
     data_ = std::move(n);
@@ -152,6 +166,7 @@ struct Serializer<runtime::FunctionInfo> {
   static void Write(Stream* strm, const runtime::FunctionInfo& info) {
     Serializer<ffi::String>::Write(strm, info->name);
     Serializer<ffi::Array<DLDataType>>::Write(strm, info->arg_types);
+    Serializer<ffi::Array<ffi::String>>::Write(strm, info->storage_scopes);
     Serializer<ffi::Array<ffi::String>>::Write(strm, info->launch_param_tags);
     Serializer<ffi::Array<runtime::ArgExtraTags>>::Write(strm, info->arg_extra_tags);
   }
@@ -160,6 +175,7 @@ struct Serializer<runtime::FunctionInfo> {
     auto n = ffi::make_object<runtime::FunctionInfoObj>();
     if (!Serializer<ffi::String>::Read(strm, &(n->name))) return false;
     if (!Serializer<ffi::Array<DLDataType>>::Read(strm, &(n->arg_types))) return false;
+    if (!Serializer<ffi::Array<ffi::String>>::Read(strm, &(n->storage_scopes))) return false;
     if (!Serializer<ffi::Array<ffi::String>>::Read(strm, &(n->launch_param_tags))) return false;
     if (!Serializer<ffi::Array<runtime::ArgExtraTags>>::Read(strm, &(n->arg_extra_tags)))
       return false;

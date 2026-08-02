@@ -49,6 +49,7 @@ inline ffi::Map<ffi::String, runtime::FunctionInfo> ExtractFuncInfo(const IRModu
     auto f = kv.second.as_or_throw<tirx::PrimFunc>();
 
     ffi::Array<DLDataType> arg_types;
+    ffi::Array<ffi::String> storage_scopes;
     ffi::Array<runtime::ArgExtraTags> arg_extra_tags;
     for (size_t i = 0; i < f->params.size(); ++i) {
       Type param_type = f->params[i]->ty;
@@ -68,6 +69,13 @@ inline ffi::Map<ffi::String, runtime::FunctionInfo> ExtractFuncInfo(const IRModu
       };
       arg_extra_tags.push_back(is_tensormap(f->params[i]) ? runtime::ArgExtraTags::kTensorMap
                                                           : runtime::ArgExtraTags::kNone);
+
+      // Get the storage scope from the type annotation if available
+      if (auto* ptr = param_type.as<PointerTypeNode>()) {
+        storage_scopes.push_back(ptr->storage_scope);
+      } else {
+        storage_scopes.push_back("");
+      }
     }
     ffi::Array<ffi::String> launch_param_tags;
     if (auto opt = f->GetAttr<ffi::Array<ffi::String>>(tirx::attr::kKernelLaunchParams)) {
@@ -79,7 +87,8 @@ inline ffi::Map<ffi::String, runtime::FunctionInfo> ExtractFuncInfo(const IRModu
     if (global_symbol) {
       fmap.Set(global_symbol.value(),
                runtime::FunctionInfo(global_symbol.value(), std::move(arg_types),
-                                     std::move(launch_param_tags), std::move(arg_extra_tags)));
+                                     std::move(launch_param_tags), std::move(arg_extra_tags),
+                                     std::move(storage_scopes)));
     }
   }
   return fmap;

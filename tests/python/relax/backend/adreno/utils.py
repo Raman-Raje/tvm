@@ -65,6 +65,24 @@ skip_unless_adreno_opencl_vulkan = pytest.mark.skipif(
     reason="need adreno opencl or vulkan",
 )
 
+def parametrize_targets(targets):
+    """Parametrize a test over ``targets``, skipping the ones with no device present."""
+    return pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param(
+                target,
+                id=target.kind.name,
+                marks=pytest.mark.skipif(
+                    not tvm.testing.device_enabled(target),
+                    reason=f"{target.kind.name} not enabled",
+                ),
+            )
+            for target in targets
+        ],
+    )
+
+
 # CLML Codegen
 skip_unless_adreno_clml = pytest.mark.skipif(
     tvm.get_global_func("relax.is_openclml_runtime_enabled", allow_missing=True) is None,

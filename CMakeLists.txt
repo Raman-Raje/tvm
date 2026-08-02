@@ -46,6 +46,7 @@ tvm_option(USE_OPENCL "Build with OpenCL" OFF)
 tvm_option(USE_OPENCL_ENABLE_HOST_PTR "Enable OpenCL memory object access to host" OFF)
 tvm_option(USE_OPENCL_GTEST "Path to OpenCL specific gtest version for runtime cpp tests." /path/to/opencl/gtest)
 tvm_option(USE_VULKAN "Build with Vulkan" OFF)
+tvm_option(USE_VULKAN_GTEST "Path to Vulkan specific gtest version for runtime cpp tests." /path/to/vulkan/gtest)
 
 
 # Whether to use spirv-tools and SPIRV-Headers from Khronos GitHub or GitLab.
@@ -444,6 +445,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 20)
+
+#include centralized gtest setup
+include(cmake/modules/GTestConfig.cmake)
 
 # Module rules
 include(cmake/modules/CUDA.cmake)

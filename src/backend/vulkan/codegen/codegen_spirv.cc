@@ -32,6 +32,7 @@
 
 #include "../../../runtime/pack_args.h"
 #include "../../../tirx/transform/ir_utils.h"
+#include "../../opencl/runtime/texture.h"
 #include "../runtime/vulkan_common.h"
 
 namespace tvm {
@@ -77,7 +78,9 @@ runtime::SPIRVShader CodeGenSPIRV::BuildFunction(const PrimFunc& f, const std::s
   TVM_FFI_ICHECK(f->HasNonzeroAttr(tirx::attr::kNoAlias))
       << "SPIRV only takes restricted memory model";
   std::vector<Var> pod_args;
-  uint32_t i_buffer = 0;
+
+  // binding for images and buffers
+  uint32_t binding_index = 0;
 
   // Currently, all storage and uniform buffer arguments are passed as
   // a single descriptor set at index 0.  If ever non-zero, must
@@ -97,8 +100,14 @@ runtime::SPIRVShader CodeGenSPIRV::BuildFunction(const PrimFunc& f, const std::s
         // The loaded byte is cast to bool inside the LoadNode visitor below.
         value_storage_type = boolean_storage_type_.WithLanes(value_storage_type.lanes());
       }
-      spirv::Value arg_value = builder_->BufferArgument(builder_->GetSType(value_storage_type),
-                                                        descriptor_set, i_buffer++);
+      spirv::Value arg_value;
+      if (runtime::IsTextureStorage(std::string(ptr->storage_scope))) {
+        arg_value = builder_->StorageImageArgument(arg->name, value_storage_type, 2, 2,
+                                                   descriptor_set, binding_index++);
+      } else {
+        arg_value = builder_->BufferArgument(builder_->GetSType(value_storage_type),
+                                             descriptor_set, binding_index++);
+      }
       builder_->SetName(arg_value, arg->name);
       storage_info_[arg.get()].SetContentType(value_storage_type, arg->name);
       var_map_[arg.get()] = arg_value;
@@ -110,7 +119,6 @@ runtime::SPIRVShader CodeGenSPIRV::BuildFunction(const PrimFunc& f, const std::s
   }
   spirv::Value func_ptr = builder_->NewFunction();
   builder_->StartFunction(func_ptr);
-
   runtime::SPIRVShader shader;
 
   if (pod_args.size() != 0) {
@@ -128,7 +136,8 @@ runtime::SPIRVShader CodeGenSPIRV::BuildFunction(const PrimFunc& f, const std::s
     } else {
       shader.flag |= 1 << runtime::vulkan::ShaderMetaDataFlagMask::kUseUBO;
       // If we need to pass more arguments than push constants could handle, we use UBO.
-      spirv::Value ptr = builder_->DeclareUniformBuffer(value_types, descriptor_set, i_buffer++);
+      spirv::Value ptr =
+          builder_->DeclareUniformBuffer(value_types, descriptor_set, binding_index++);
       for (size_t i = 0; i < pod_args.size(); ++i) {
         spirv::Value value = builder_->GetUniform(ptr, value_types[i], static_cast<uint32_t>(i));
         var_map_[pod_args[i].get()] = value;
@@ -561,6 +570,68 @@ spirv::Value CodeGenSPIRV::VisitExpr_(const CallNode* op) {
     return builder_->StructArrayAccess(ptr_type, var_map_[buffer_node], MakeValue(index));
   } else if (op->op.same_as(builtin::tvm_thread_invariant())) {
     return MakeValue(op->args[0]);
+  } else if (op->op.same_as(builtin::texture2d_store())) {
+    TVM_FFI_ICHECK_EQ(op->args.size(), 6U);
+
+    // Extract the four arguments and convert them to SPIR-V values
+    spirv::Value image = MakeValue(op->args[0]);        // image
+    spirv::Value coord_x = MakeValue(op->args[1]);      // x-coordinate
+    spirv::Value coord_y = MakeValue(op->args[2]);      // y-coordinate
+    spirv::Value layer_index = MakeValue(op->args[3]);  // layer_index
+    spirv::Value texel = MakeValue(op->args.back());
+
+    // Composite value representing the coordinates (int3)
+    spirv::Value coord = builder_->MakeComposite(
+        builder_->GetSType(PrimType::Int(32, 3)), {coord_x, coord_y, layer_index});
+
+    spirv::SType image_type = builder_->QuerySType(op->args[0].as<VarNode>()->name);
+    spirv::Value loaded_image = builder_->MakeValue(spv::OpLoad, image_type, image);
+
+    // Generate the SPIR-V instruction to store the value in the texture
+    builder_->MakeInst(spv::OpImageWrite, loaded_image, coord, texel);
+    return spirv::Value();
+
+  } else if (op->op.same_as(builtin::texture2d_load())) {
+    TVM_FFI_ICHECK_EQ(op->args.size(), 6U);
+
+    // Extract the three arguments and convert them to SPIR-V values
+    spirv::SType image_type = builder_->QuerySType(op->args[0].as<VarNode>()->name);
+    spirv::Value image = MakeValue(op->args[0]);        // image
+    spirv::Value coord_x = MakeValue(op->args[1]);      // x-coordinate
+    spirv::Value coord_y = MakeValue(op->args[2]);      // y-coordinate
+    spirv::Value layer_index = MakeValue(op->args[3]);  // layer_index
+
+    // Create a composite value representing the coordinates (int3)
+    spirv::Value coord = builder_->MakeComposite(
+        builder_->GetSType(PrimType::Int(32, 3)), {coord_x, coord_y, layer_index});
+
+    spirv::Value loaded_image = builder_->MakeValue(spv::OpLoad, image_type, image);
+    spirv::Value image_texel = builder_->MakeValue(
+        spv::OpImageRead, builder_->GetSType(op->ty.as_or_throw<PrimType>().WithLanes(4)), loaded_image, coord);
+
+    if (op->args.back().as<RampNode>()) {
+      return image_texel;
+    } else {
+      std::vector<spirv::Value> components;
+      // Extract the required component from the vector
+      spirv::SType element_type =
+          builder_->GetSType(op->ty.as_or_throw<PrimType>().WithLanes(1));  // Scalar type (float)
+      spirv::Value index = MakeValue(op->args.back());  // Index to extract
+      spirv::Value component =
+          builder_->MakeValue(spv::OpVectorExtractDynamic, element_type, image_texel, index);
+
+      if (op->ty.as_or_throw<PrimType>().lanes() > 1) {
+        // Create a vector by duplicating the extracted component
+        for (int i = 0; i < op->ty.as_or_throw<PrimType>().lanes(); i++) {
+          components.push_back(component);
+        }
+        // Combine the components into a single vector
+        return builder_->Concat(components);
+      } else {
+        return component;
+      }
+    }
+
   } else {
     TVM_FFI_THROW(InternalError) << "Unresolved call  " << op->op;
     return spirv::Value();

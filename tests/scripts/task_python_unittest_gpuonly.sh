@@ -36,3 +36,9 @@ export PYTEST_ADDOPTS="${CI_PYTEST_ADD_OPTIONS:-} ${PYTEST_ADDOPTS:-}"
 
 python3 -m pytest -vvs -n auto -m "${TVM_TEST_MARKER}" \
     tests/python/codegen/test_target_codegen_vulkan.py
+
+# Adreno texture tests, exercised on the CI GPU via the OpenCL and Vulkan backends.
+export TVM_TEST_TARGETS='opencl;{"kind":"vulkan","from_device":0}'
+
+python3 -m pytest -vvs -n auto -m "${TVM_TEST_MARKER}" \
+    tests/python/relax/backend/adreno/

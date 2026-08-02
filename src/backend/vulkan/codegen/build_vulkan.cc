@@ -67,5 +67,23 @@ void RegisterVulkanCodegen() {
                         [](IRModule mod, Target target) { return BuildSPIRV(mod, target); });
 }
 
+ffi::String VulkanDeviceScopeCompatibilityFromTarget(Target target, ffi::String memory_scope) {
+  bool is_adreno = target->HasKey("adreno");
+  if (is_adreno) {
+    return ffi::String("global");
+  }
+  return memory_scope;
+}
+
+void RegisterVulkanDeviceScopeCompatibility() {
+  static bool registered = false;
+  if (registered) return;
+  registered = true;
+
+  namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef().def("DeviceScopeCompatibility.vulkan",
+                        VulkanDeviceScopeCompatibilityFromTarget);
+}
+
 }  // namespace codegen
 }  // namespace tvm

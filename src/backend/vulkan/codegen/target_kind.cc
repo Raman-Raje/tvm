@@ -42,10 +42,10 @@ void RegisterTargetKind() {
       .add_attr_option<bool>("supports_int8")
       .add_attr_option<bool>("supports_int16")
       .add_attr_option<bool>("supports_int32", refl::DefaultValue(true))
-      .add_attr_option<bool>("supports_int64")
+      .add_attr_option<bool>("supports_int64", refl::DefaultValue(true))
       .add_attr_option<bool>("supports_8bit_buffer")
       .add_attr_option<bool>("supports_16bit_buffer")
-      .add_attr_option<bool>("supports_storage_buffer_storage_class")
+      .add_attr_option<bool>("supports_storage_buffer_storage_class", refl::DefaultValue(true))
       .add_attr_option<bool>("supports_push_descriptor")
       .add_attr_option<bool>("supports_dedicated_allocation")
       .add_attr_option<bool>("supports_integer_dot_product")
@@ -54,6 +54,8 @@ void RegisterTargetKind() {
       .add_attr_option<int64_t>("max_num_threads", refl::DefaultValue(256))
       .add_attr_option<int64_t>("max_threads_per_block", refl::DefaultValue(256))
       .add_attr_option<int64_t>("thread_warp_size", refl::DefaultValue(1))
+      .add_attr_option<int64_t>("texture_spatial_limit", refl::DefaultValue(16384))
+      .add_attr_option<int64_t>("texture_depth_limit", refl::DefaultValue(2048))
       .add_attr_option<int64_t>("max_block_size_x")
       .add_attr_option<int64_t>("max_block_size_y")
       .add_attr_option<int64_t>("max_block_size_z")
@@ -68,6 +70,7 @@ void RegisterTargetKind() {
       .add_attr_option<int64_t>("driver_version")
       .add_attr_option<int64_t>("vulkan_api_version")
       .add_attr_option<int64_t>("max_spirv_version")
+      .add_attr_option<int64_t>("image_base_address_alignment", refl::DefaultValue(64))
       .set_default_keys({"vulkan", "gpu"});
 }
 
@@ -77,6 +80,7 @@ void RegisterTargetKind() {
 #ifdef TVM_ENABLE_SPIRV
 namespace codegen {
 void RegisterVulkanCodegen();
+void RegisterVulkanDeviceScopeCompatibility();
 namespace spirv {
 void RegisterVulkanIntrinRules();
 }  // namespace spirv
@@ -89,5 +93,6 @@ TVM_FFI_STATIC_INIT_BLOCK() {
 #ifdef TVM_ENABLE_SPIRV
   tvm::codegen::spirv::RegisterVulkanIntrinRules();
   tvm::codegen::RegisterVulkanCodegen();
+  tvm::codegen::RegisterVulkanDeviceScopeCompatibility();
 #endif
 }

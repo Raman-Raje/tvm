@@ -145,7 +145,9 @@ VulkanDeviceProperties::VulkanDeviceProperties(const VulkanInstance& instance,
   supported_subgroup_operations =
       (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) ? subgroup.supportedOperations : 0;
 
+  timestamp_period = properties.properties.limits.timestampPeriod;
   max_num_threads = properties.properties.limits.maxComputeWorkGroupInvocations;
+  image_row_align = properties.properties.limits.optimalBufferCopyRowPitchAlignment;
 
   // Even if we can't query it, warp size must be at least 1.
   // thread_warp_size = std::max(subgroup.subgroupSize, 1U);
@@ -239,6 +241,12 @@ VulkanGetBufferMemoryRequirements2Functions::VulkanGetBufferMemoryRequirements2F
     VkDevice device) {
   vkGetBufferMemoryRequirements2KHR = (PFN_vkGetBufferMemoryRequirements2KHR)TVM_FFI_ICHECK_NOTNULL(
       vkGetDeviceProcAddr(device, "vkGetBufferMemoryRequirements2KHR"));
+}
+
+VulkanGetImageMemoryRequirements2Functions::VulkanGetImageMemoryRequirements2Functions(
+    VkDevice device) {
+  vkGetImageMemoryRequirements2KHR = (PFN_vkGetImageMemoryRequirements2KHR)TVM_FFI_ICHECK_NOTNULL(
+      vkGetDeviceProcAddr(device, "vkGetImageMemoryRequirements2KHR"));
 }
 
 VulkanQueueInsertDebugUtilsLabelFunctions::VulkanQueueInsertDebugUtilsLabelFunctions(

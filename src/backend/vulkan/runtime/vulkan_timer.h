@@ -23,6 +23,8 @@
 #include <tvm/runtime/timer.h>
 #include <vulkan/vulkan.h>
 
+#include <chrono>
+
 #include "vulkan_device.h"
 #include "vulkan_stream.h"
 
@@ -67,6 +69,15 @@ class VulkanTimerNode : public TimerNode {
    */
   int64_t SyncAndGetElapsedNanos() override;
 
+  /*!
+   * \brief Whether this timer measures with GPU timestamp queries.
+   *
+   * False if the device's compute queue family does not support timestamp
+   * queries, in which case the timer falls back to host-side timing around a
+   * stream synchronization.
+   */
+  bool UsesGpuTimestamps() const { return use_gpu_timer_; }
+
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("runtime.vulkan.VulkanTimerNode", VulkanTimerNode, TimerNode);
 
  private:
@@ -74,10 +85,14 @@ class VulkanTimerNode : public TimerNode {
   VkDevice device_{VK_NULL_HANDLE};         ///< The Vulkan device handle.
   VulkanStream* stream_{nullptr};           ///< The Vulkan stream for command buffer management.
   VkQueryPool query_pool_{VK_NULL_HANDLE};  ///< The Vulkan query pool for timestamp queries.
-  float timestamp_period_;    ///< The period (in nanoseconds) for each timestamp tick.
-  uint32_t start_query_ = 0;  ///< The index for the start timestamp query.
-  uint32_t end_query_ = 1;    ///< The index for the end timestamp query.
-  int64_t duration_ = 0;      ///< The measured duration in nanoseconds.
+  float timestamp_period_{0.0f};  ///< The period (in nanoseconds) for each timestamp tick.
+  uint64_t timestamp_mask_{0};    ///< Mask of the bits that the device defines in a timestamp.
+  bool use_gpu_timer_{false};     ///< False when the queue family cannot write timestamps.
+  bool query_pending_{false};     ///< True between Start() and the Stop() that flushes it.
+  uint32_t start_query_ = 0;      ///< The index for the start timestamp query.
+  uint32_t end_query_ = 1;        ///< The index for the end timestamp query.
+  int64_t duration_ = 0;          ///< The measured duration in nanoseconds.
+  std::chrono::high_resolution_clock::time_point host_start_;  ///< Fallback start time.
 
   /*!
    * \brief Creates a Vulkan query pool for timestamp queries.

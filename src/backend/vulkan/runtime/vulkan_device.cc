@@ -163,6 +163,22 @@ VulkanDeviceProperties::VulkanDeviceProperties(const VulkanInstance& instance,
   max_per_stage_descriptor_storage_buffer =
       properties.properties.limits.maxPerStageDescriptorStorageBuffers;
   max_shared_memory_per_block = properties.properties.limits.maxComputeSharedMemorySize;
+
+  // Timestamp queries are used by VulkanTimerNode.  Whether they are usable depends on
+  // the queue family that TVM submits its work to, so query the properties of that
+  // family instead of relying on limits.timestampComputeAndGraphics.
+  timestamp_period = properties.properties.limits.timestampPeriod;
+  {
+    uint32_t queue_prop_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_prop_count, nullptr);
+    std::vector<VkQueueFamilyProperties> queue_props(queue_prop_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_prop_count, queue_props.data());
+    if (device.queue_family_index < queue_prop_count) {
+      timestamp_valid_bits = queue_props[device.queue_family_index].timestampValidBits;
+    }
+  }
+  supports_timestamp_queries = (timestamp_valid_bits > 0) && (timestamp_period > 0.0f);
+
   device_name = properties.properties.deviceName;
   driver_version = properties.properties.driverVersion;
 

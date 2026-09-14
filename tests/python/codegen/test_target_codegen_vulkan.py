@@ -708,5 +708,45 @@ def test_export_load_with_fallback(monkeypatch, tmp_path):
     host_lib.export_library(lib_path)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_vulkan(), reason="need vulkan")
+def test_vulkan_timer():
+    """time_evaluator should use the Vulkan timer instead of the default timer."""
+    n = 1024
+
+    @I.ir_module(s_tir=True)
+    class Module:
+        @T.prim_func(s_tir=True)
+        def main(A: T.Buffer((n,), "float32"), B: T.Buffer((n,), "float32")):
+            T.func_attr({"tirx.noalias": True})
+            for i_0 in T.thread_binding(n // 32, thread="blockIdx.x"):
+                for i_1 in T.thread_binding(32, thread="threadIdx.x"):
+                    with T.sblock("B"):
+                        v_i = T.axis.spatial(n, i_0 * 32 + i_1)
+                        T.reads(A[v_i])
+                        T.writes(B[v_i])
+                        B[v_i] = A[v_i] + 1.0
+
+    # Timer::Start dispatches on this name, so a differently named registration would
+    # silently fall back to the default (host-side) timer.
+    assert tvm.get_global_func("runtime.timer.vulkan", allow_missing=True) is not None
+
+    func = tvm.compile(Module, target="vulkan")
+
+    def run_and_check():
+        dev = tvm.vulkan(0)
+        a = tvm.runtime.tensor(np.random.uniform(size=n).astype("float32"), dev)
+        b = tvm.runtime.tensor(np.zeros(n, dtype="float32"), dev)
+
+        ftimer = func.time_evaluator(func.entry_name, dev, number=10, repeat=3)
+        result = ftimer(a, b)
+
+        assert len(result.results) == 3
+        assert all(t > 0 for t in result.results)
+        tvm.testing.assert_allclose(b.numpy(), a.numpy() + 1.0, atol=1e-5, rtol=1e-5)
+
+    tvm.testing.run_with_gpu_lock(run_and_check)
+
+
 if __name__ == "__main__":
     tvm.testing.main()

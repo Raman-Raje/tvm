@@ -89,6 +89,7 @@ struct VulkanDeviceProperties {
   bool supports_dedicated_allocation{false};
   bool supports_integer_dot_product{false};
   bool supports_cooperative_matrix{false};
+  bool supports_timestamp_queries{false};
   uint32_t supported_subgroup_operations{0};
   uint32_t max_num_threads{1};
   uint32_t thread_warp_size{1};
@@ -100,6 +101,11 @@ struct VulkanDeviceProperties {
   uint32_t max_storage_buffer_range{1 << 27};
   uint32_t max_per_stage_descriptor_storage_buffer{4};
   uint32_t max_shared_memory_per_block{16384};
+  // Number of nanoseconds represented by a single timestamp query tick.
+  float timestamp_period{0.0f};
+  // Number of meaningful low-order bits in a timestamp written by the compute queue
+  // family.  Zero if that queue family does not support timestamp queries.
+  uint32_t timestamp_valid_bits{0};
   std::string device_type{"unknown_device_type"};
   std::string device_name{"unknown_device_name"};
   std::string driver_name{"unknown_driver_name"};

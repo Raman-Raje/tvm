@@ -455,7 +455,7 @@ VulkanDevice& VulkanDeviceAPI::device(size_t device_id) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef().def("profiling.timer.vulkan",
+  refl::GlobalDef().def("runtime.timer.vulkan",
                         [](Device dev) { return Timer(ffi::make_object<VulkanTimerNode>(dev)); });
 }
 

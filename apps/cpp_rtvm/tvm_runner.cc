@@ -26,17 +26,18 @@
 
 #include <tvm/runtime/logging.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <sstream>
 #include <streambuf>
 #include <string>
+#include <unordered_map>
 #include <vector>
-
-#include "cnpy.h"
 
 namespace tvm {
 namespace runtime {
@@ -68,40 +69,151 @@ DLDeviceType GetTVMDevice(std::string device) {
   } else {
     LOG(FATAL) << "TVMRunner : Unsupported device :" << device;
   }
+  TVM_FFI_UNREACHABLE();
+}
+
+/*! \brief Contents of a numpy .npy file. */
+struct NpyArray {
+  std::vector<int64_t> shape;
+  DLDataType dtype;
+  std::vector<char> data;
+};
+
+/*!
+ * \brief Get the value text following a key in a npy header dict.
+ * \param header The npy header dict, e.g. "{'descr': '<f4', 'shape': (1, 3), }".
+ * \param key The dict key.
+ * \return The header text starting right after "key:".
+ */
+static std::string NpyHeaderValue(const std::string& header, const std::string& key) {
+  size_t pos = header.find("'" + key + "'");
+  TVM_FFI_ICHECK(pos != std::string::npos) << "npy header has no '" << key << "': " << header;
+  pos = header.find(':', pos);
+  TVM_FFI_ICHECK(pos != std::string::npos) << "Malformed npy header: " << header;
+  return header.substr(pos + 1);
 }
 
 /*!
- * \brief Parsing numpy file to get data type of npy tensor.
+ * \brief Load a numpy .npy file (format version 1.x - 3.x, little endian, C order).
  * \param fname Numpy file name.
- * \return data type of npy tensor.
+ * \return The loaded array.
  */
-std::string parse_npy_dtype(std::string fname) {
-  if (fname.find(".npy") == std::string::npos)
-    throw std::runtime_error("parse_npy_dtype: Invalid file " + fname);
+NpyArray LoadNpy(const std::string& fname) {
+  std::ifstream fs(fname, std::ios::binary);
+  TVM_FFI_ICHECK(fs) << "Unable to open npy file " << fname;
+  char magic[8];
+  fs.read(magic, sizeof(magic));
+  TVM_FFI_ICHECK(fs && std::memcmp(magic, "\x93NUMPY", 6) == 0) << "Not a npy file: " << fname;
+  unsigned char len_bytes[4] = {0, 0, 0, 0};
+  fs.read(reinterpret_cast<char*>(len_bytes), magic[6] == 1 ? 2 : 4);
+  uint32_t header_len = len_bytes[0] | (len_bytes[1] << 8) | (len_bytes[2] << 16) |
+                        (static_cast<uint32_t>(len_bytes[3]) << 24);
+  std::string header(header_len, ' ');
+  fs.read(header.data(), header_len);
+  TVM_FFI_ICHECK(fs) << "Truncated npy header: " << fname;
 
-  FILE* fp = fopen(fname.c_str(), "rb");
+  // descr, e.g. '<f4', '|u1', '|b1'
+  std::string descr = NpyHeaderValue(header, "descr");
+  size_t q0 = descr.find('\'');
+  size_t q1 = descr.find('\'', q0 + 1);
+  descr = descr.substr(q0 + 1, q1 - q0 - 1);
+  TVM_FFI_ICHECK(descr.size() >= 3 && descr[0] != '>')
+      << "Unsupported npy dtype '" << descr << "' in " << fname << " (big endian?)";
+  int nbytes = std::stoi(descr.substr(2));
+  std::string dtype;
+  switch (descr[1]) {
+    case 'f':
+      dtype = "float" + std::to_string(nbytes * 8);
+      break;
+    case 'i':
+      dtype = "int" + std::to_string(nbytes * 8);
+      break;
+    case 'u':
+      dtype = "uint" + std::to_string(nbytes * 8);
+      break;
+    case 'b':
+      dtype = "bool";
+      break;
+    default:
+      LOG(FATAL) << "Unsupported npy dtype '" << descr << "' in " << fname;
+  }
 
-  if (!fp) throw std::runtime_error("parse_npy_dtype: Unable to open file " + fname);
+  std::string fortran_order = NpyHeaderValue(header, "fortran_order");
+  TVM_FFI_ICHECK(fortran_order.find("False") < fortran_order.find(','))
+      << "Fortran ordered npy files are not supported: " << fname;
 
-  char buffer[256];
-  size_t res = fread(buffer, sizeof(char), 11, fp);
-  if (res != 11) throw std::runtime_error("get_data_type: failed fread");
-  std::string header = fgets(buffer, 256, fp);
-  size_t loc1 = header.find("descr") + 9;
-  std::string str_ws = header.substr(loc1 + 1);
-  size_t loc3 = str_ws.find("'");
-  std::string dtype_code = str_ws.substr(0, loc3 - 1);
-  std::string dtype_size = str_ws.substr(1, loc3);
-  std::string data_type;
-  if (dtype_code == "f")
-    data_type = "float";
-  else if (dtype_code == "u")
-    data_type = "uint";
-  else if (dtype_code == "i")
-    data_type = "int";
-  data_type = data_type + std::to_string(atoi(dtype_size.c_str()) * 8);
-  fclose(fp);
-  return data_type;
+  std::string shape_str = NpyHeaderValue(header, "shape");
+  shape_str = shape_str.substr(shape_str.find('(') + 1);
+  shape_str = shape_str.substr(0, shape_str.find(')'));
+  std::replace(shape_str.begin(), shape_str.end(), ',', ' ');
+
+  NpyArray arr;
+  arr.dtype = ffi::StringToDLDataType(dtype);
+  std::istringstream shape_ss(shape_str);
+  int64_t dim;
+  size_t numel = 1;
+  while (shape_ss >> dim) {
+    arr.shape.push_back(dim);
+    numel *= static_cast<size_t>(dim);
+  }
+  arr.data.resize(numel * nbytes);
+  fs.read(arr.data.data(), arr.data.size());
+  TVM_FFI_ICHECK(fs) << "Truncated npy data: " << fname;
+  return arr;
+}
+
+/*!
+ * \brief Save raw tensor data as a numpy .npy file (format version 1.0).
+ * \param fname Numpy file name.
+ * \param dtype Data type of the tensor.
+ * \param shape Shape of the tensor.
+ * \param data Raw tensor bytes.
+ * \return false if dtype can not be represented in npy.
+ */
+bool SaveNpy(const std::string& fname, DLDataType dtype, const std::vector<int64_t>& shape,
+             const std::vector<char>& data) {
+  char kind;
+  switch (dtype.code) {
+    case kDLFloat:
+      kind = 'f';
+      break;
+    case kDLInt:
+      kind = 'i';
+      break;
+    case kDLUInt:
+      kind = 'u';
+      break;
+    case kDLBool:
+      kind = 'b';
+      break;
+    default:
+      return false;
+  }
+  if (dtype.lanes != 1 || dtype.bits % 8 != 0) return false;
+  int nbytes = dtype.bits / 8;
+
+  std::ostringstream header;
+  header << "{'descr': '" << (nbytes == 1 ? '|' : '<') << kind << nbytes
+         << "', 'fortran_order': False, 'shape': (";
+  for (size_t i = 0; i < shape.size(); ++i) header << shape[i] << ", ";
+  header << "), }";
+  std::string header_str = header.str();
+  // Pad with spaces so that magic(6) + version(2) + len(2) + header ends with '\n' on 64 bytes.
+  size_t total = 10 + header_str.size() + 1;
+  header_str.append((64 - total % 64) % 64, ' ');
+  header_str.push_back('\n');
+
+  std::ofstream fs(fname, std::ios::binary);
+  TVM_FFI_ICHECK(fs) << "Unable to create npy file " << fname;
+  uint16_t header_len = static_cast<uint16_t>(header_str.size());
+  const char len_bytes[2] = {static_cast<char>(header_len & 0xff),
+                             static_cast<char>(header_len >> 8)};
+  fs.write("\x93NUMPY\x01\x00", 8);
+  fs.write(len_bytes, 2);
+  fs.write(header_str.data(), header_str.size());
+  fs.write(data.data(), data.size());
+  TVM_FFI_ICHECK(fs) << "Failed writing npy file " << fname;
+  return true;
 }
 
 // Function to trim whitespace from a string
@@ -157,23 +269,13 @@ int SaveNDArrayToNpyFile(Tensor& nd_arr, int index, std::string fname) {
   auto ssize = GetMemSize(nd_arr);
   LOG(INFO) << "Output Size:" << ssize << "  bytes";
 
-  void* data = (void*)malloc(ssize * (nd_arr->dtype.bits * nd_arr->dtype.lanes + 7) / 8);
-  nd_arr.CopyToBytes(data, ssize);
-  std::vector<size_t> shape;
-
-  for (int j = 0; j < nd_arr->ndim; ++j) shape.push_back(nd_arr->shape[j]);
-  if (((nd_arr->dtype.bits * nd_arr->dtype.lanes + 7) / 8) == 4) {
-    cnpy::npy_save<float>(fname + "/" + std::to_string(index) + ".npy", (float*)data, shape, "w");
-  } else if (((nd_arr->dtype.bits * nd_arr->dtype.lanes + 7) / 8) == 2) {
-    cnpy::npy_save<uint16_t>(fname + "/" + std::to_string(index) + ".npy", (uint16_t*)data, shape,
-                             "w");
-  } else if (((nd_arr->dtype.bits * nd_arr->dtype.lanes + 7) / 8) == 1) {
-    cnpy::npy_save<int8_t>(fname + "/" + std::to_string(index) + ".npy", (int8_t*)data, shape, "w");
-  } else {
-    LOG(WARNING) << "DType:" << (((nd_arr->dtype.bits * nd_arr->dtype.lanes + 7) / 8) == 2)
-                 << " is not supported for npy_save";
+  std::vector<char> data(ssize);
+  nd_arr.CopyToBytes(data.data(), ssize);
+  std::vector<int64_t> shape(nd_arr->shape, nd_arr->shape + nd_arr->ndim);
+  if (!SaveNpy(fname + "/" + std::to_string(index) + ".npy", nd_arr->dtype, shape, data)) {
+    LOG(WARNING) << "DType:" << ffi::DLDataTypeToString(nd_arr->dtype)
+                 << " is not supported for npy save";
   }
-  free(data);
   return 0;
 }
 
@@ -204,10 +306,10 @@ int TVMRunner::Load(void) {
   (*r_graph_handle)
       ->GetFunction("vm_initialization")
       .value()(static_cast<int>(GetTVMDevice(r_device)), 0,
-               static_cast<int>(tvm::runtime::AllocatorType::kPooled), static_cast<int>(kDLCPU), 0,
-               static_cast<int>(tvm::runtime::AllocatorType::kPooled));
+               static_cast<int>(memory::AllocatorType::kPooled), static_cast<int>(kDLCPU), 0,
+               static_cast<int>(memory::AllocatorType::kPooled));
   auto tend = std::chrono::high_resolution_clock::now();
-  r_module_load_ms = static_cast<double>((tend - tstart).count()) / 1e6;
+  r_module_load_ms = std::chrono::duration<double, std::milli>(tend - tstart).count();
 
   return 0;
 }
@@ -224,14 +326,13 @@ int TVMRunner::CreateInputNDArrayFromFile(std::string inputfile) {
                                  ->GetFunction("get_function_param_name")
                                  .value()("main", i)
                                  .cast<std::string>();
-    cnpy::NpyArray npy_arry = cnpy::npy_load(inputfile + "/" + param_name + ".npy");
-    std::string dtype = parse_npy_dtype(inputfile + "/" + param_name + ".npy");
+    NpyArray npy_arry = LoadNpy(inputfile + "/" + param_name + ".npy");
     if (inputs_.size() <= i) inputs_.resize(i + 1);
-    inputs_[i] =
-        Tensor::Empty(ffi::Shape(npy_arry.shape.begin(), npy_arry.shape.end()),
-                      ffi::StringToDLDataType(dtype), DLDevice{GetTVMDevice(r_device), 0});
+    inputs_[i] = Tensor::Empty(ffi::Shape(npy_arry.shape.begin(), npy_arry.shape.end()),
+                               npy_arry.dtype, DLDevice{GetTVMDevice(r_device), 0});
     auto ssize = GetMemSize(inputs_[i]);
-    inputs_[i].CopyFromBytes(npy_arry.data<char>(), ssize);
+    TVM_FFI_ICHECK_EQ(ssize, npy_arry.data.size());
+    inputs_[i].CopyFromBytes(npy_arry.data.data(), ssize);
   }
   return 0;
 }
@@ -334,9 +435,12 @@ Tensor TVMRunner::GetOutputNDArray(int index) {
  * \param 0 on success else error code.
  */
 int TVMRunner::Run(void) {
-  r_run_was_called = true;
   (*r_graph_handle)->GetFunction("invoke_stateful").value()("main");
-  mInfo.n_outputs = (*r_graph_handle)->GetFunction("get_output_arity").value()("main").cast<int>();
+  if (!r_run_was_called) {
+    mInfo.n_outputs =
+        (*r_graph_handle)->GetFunction("get_output_arity").value()("main").cast<int>();
+    r_run_was_called = true;
+  }
   return 0;
 }
 

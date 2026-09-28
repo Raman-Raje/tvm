@@ -3,22 +3,12 @@ cmake_policy(SET CMP0069 NEW) # suppress cmake warning about IPO
 set(RTVM_SOURCES
   main.cc
   tvm_runner.cc
-  ../../3rdparty/cnpy/cnpy.cpp
 )
 set(TVM_RUNNER_SOURCES
   tvm_runner.cc
-  ../../3rdparty/cnpy/cnpy.cpp
 )
 
 set(RTVM_LINKER_LIBS "")
-
-if(WIN32)
-  file(GLOB ZLIB_SRC
-       "../../3rdparty/zlib/*.c"
-  )
-  list(APPEND RTVM_SOURCES ${ZLIB_SRC})
-  list(APPEND TVM_RUNNER_SOURCES ${ZLIB_SRC})
-endif()
 
 # Set output to same directory as the other TVM libs
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -54,16 +44,10 @@ if(USE_OPENCL)
    endif()
 endif()
 
-target_include_directories(
-  rtvm
-  PUBLIC "../../include"
-  PUBLIC "../../3rdparty/tvm-ffi/include"
-  PUBLIC "../../3rdparty/tvm-ffi/3rdparty/dlpack/include"
-  PUBLIC "../../3rdparty/zlib"
-  PUBLIC "../../3rdparty/cnpy"
-  PUBLIC DLPACK_PATH
-  PUBLIC DMLC_PATH
-)
+target_include_directories(rtvm PUBLIC "../../include")
+target_link_libraries(rtvm PUBLIC tvm_ffi_header)
+target_include_directories(tvm_runner_objs PUBLIC "../../include")
+target_link_libraries(tvm_runner_objs PUBLIC tvm_ffi_header)
 
 if (BUILD_FOR_ANDROID AND USE_HEXAGON)
   get_hexagon_sdk_property("${USE_HEXAGON_SDK}" "${USE_HEXAGON_ARCH}"
@@ -77,27 +61,26 @@ if (BUILD_FOR_ANDROID AND USE_HEXAGON)
   list(APPEND RTVM_LINKER_LIBS cdsprpc log)
 endif()
 
+# Device backends (OpenCL, CUDA, Vulkan, ...) are separate shared runtime libraries
+# that register their DeviceAPI at load time, so they must stay linked even though
+# rtvm references no symbol from them (hence --no-as-needed).
 if(BUILD_STATIC_RUNTIME)
-  list(APPEND RTVM_LINKER_LIBS -Wl,--whole-archive tvm_runtime -Wl,--no-whole-archive)
+  foreach(lib tvm_runtime tvm_ffi_static)
+    if(MSVC)
+      list(APPEND RTVM_LINKER_LIBS "/WHOLEARCHIVE:$<TARGET_FILE:${lib}>")
+    elseif(APPLE)
+      list(APPEND RTVM_LINKER_LIBS "-Wl,-force_load,$<TARGET_FILE:${lib}>")
+    else()
+      list(APPEND RTVM_LINKER_LIBS "-Wl,--whole-archive" "${lib}" "-Wl,--no-whole-archive")
+    endif()
+  endforeach()
 else()
-  list(APPEND RTVM_LINKER_LIBS tvm_runtime)
+  if(NOT MSVC AND NOT APPLE)
+    list(APPEND RTVM_LINKER_LIBS tvm_runtime "-Wl,--no-as-needed" ${TVM_RUNTIME_BACKEND_LIBS} "-Wl,--as-needed")
+  else()
+    list(APPEND RTVM_LINKER_LIBS tvm_runtime ${TVM_RUNTIME_BACKEND_LIBS})
+  endif()
 endif()
 
-if(NOT WIN32)
-  list(APPEND RTVM_LINKER_LIBS z)
-endif()
-
-target_link_libraries(rtvm ${RTVM_LINKER_LIBS})
-
-# Build tvm_runner as a exportable lib
-target_include_directories(
-  tvm_runner_objs
-  PUBLIC "../../include"
-  PUBLIC "../../3rdparty/tvm-ffi/include"
-  PUBLIC "../../3rdparty/tvm-ffi/3rdparty/dlpack/include"
-  PUBLIC "../../3rdparty/cnpy"
-  PUBLIC "../../3rdparty/zlib"
-  PUBLIC DLPACK_PATH
-  PUBLIC DMLC_PATH
-)
-target_link_libraries(tvm_runner ${RTVM_LINKER_LIBS})
+target_link_libraries(rtvm PRIVATE ${RTVM_LINKER_LIBS})
+target_link_libraries(tvm_runner PRIVATE ${RTVM_LINKER_LIBS})

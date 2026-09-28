@@ -17,14 +17,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import os
+
 import numpy as np
 
 import tvm
 import tvm.testing
-from tvm import relax
-from tvm.contrib import ndk
 from tvm.script import ir as I
 from tvm.script import relax as R
+from tvm.support import ndk
 
 TARGET = "opencl"
 HOST = {"kind": "llvm", "mtriple": "aarch64-linux-gnu"}
@@ -757,11 +758,8 @@ def get_network():
 def generate_model_artifacts(mod):
     tgt = tvm.target.Target(TARGET, host=HOST)
 
-    relax_pipeline = relax.pipeline.get_default_pipeline(tgt)
-    tir_pipeline = tvm.tir.get_default_tir_pipeline(tgt)
-    mod = relax_pipeline(mod)
-
-    ex = tvm.compile(mod, tgt, tir_pipeline=tir_pipeline)
+    # tvm.compile applies the target specific default Relax and TIR pipelines.
+    ex = tvm.compile(mod, tgt)
 
     ex.export_library(
         tgt.kind.name + "_vm_mod.so",
@@ -770,6 +768,7 @@ def generate_model_artifacts(mod):
     )
 
     input_dir = "inputs/"
+    os.makedirs(input_dir, exist_ok=True)
     for arg in mod["main"].params:
         shape = tuple(shape_val.value for shape_val in arg.struct_info.shape.values)
         if str(arg.struct_info.dtype).startswith("uint"):

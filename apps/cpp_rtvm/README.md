@@ -40,7 +40,8 @@ Now we will verify the deployment run of the compiled model using ```rtvm``` too
 
 We need to copy the artifacts and inputs folder under Android temp folder at ```/data/local/tmp/```
 
-Also copy the cross compiled tool ```rtvm``` and ```libtvm_runtime.so``` to ```data/local/tmp/```
+Also copy the cross compiled tool ```rtvm```, ```libtvm_runtime.so```, ```libtvm_ffi.so``` and the device
+backend library (e.g. ```libtvm_runtime_opencl.so```) to ```data/local/tmp/```
 
 ```rtvm``` usage can be quired as below
 ```bash

@@ -28,27 +28,27 @@
 #include <unistd.h>
 #endif
 
+#include <tvm/runtime/logging.h>
+
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <vector>
 
-#include "../../src/support/socket.h"
-#include "../../src/support/utils.h"
 #include "tvm_runner.h"
 
 using namespace std;
 using namespace tvm::runtime;
-using namespace tvm::support;
 
 static const string kUsage =
     "Command line usage\n"
-    "--model        - The folder containing tvm artifacts(mod.so, mod.param, mod.json) \n"
+    "--model        - The tvm compiled Relax VM module (mod.so)\n"
     "--device       - The target device to use {llvm, opencl, cpu, cuda, metal, rocm, vpi, "
     "oneapi}\n"
-    "--input        - Numpy file for the model input (optional and we use random of not given)\n"
-    "--output       - Numpy file name to dump the model output as numpy\n"
+    "--input        - Folder with one <param_name>.npy file per main() parameter\n"
+    "--output       - Folder to dump the model outputs as <index>.npy\n"
     "--dump-meta    - Dump model meta information\n"
     "--pre-compiled - The file name of a file where pre-compiled programs should be stored\n"
     "--profile      - Profile over all execution\n"
@@ -57,8 +57,8 @@ static const string kUsage =
     "--zero-copy    - Profile with zero copy api\n"
     "\n"
     "  Example\n"
-    "  ./rtvm --model=keras-resnet50 --device=\"opencl\" --dump-meta\n"
-    "  ./rtvm --model=keras-resnet50 --device=\"opencl\" --input input.npz --output=output.npz\n"
+    "  ./rtvm --model=opencl_vm_mod.so --device=opencl --input=./inputs --dump-meta\n"
+    "  ./rtvm --model=opencl_vm_mod.so --device=opencl --input=./inputs --output=./out\n"
     "\n";
 
 /*!
@@ -174,6 +174,9 @@ void ParseCmdArgs(int argc, char* argv[], struct ToolArgs& args) {
   const string input = GetCmdOption(argc, argv, "--input=");
   if (!input.empty()) {
     args.input = input;
+  } else {
+    LOG(INFO) << kUsage;
+    exit(0);
   }
 
   const string output = GetCmdOption(argc, argv, "--output=");
@@ -221,13 +224,13 @@ int ExecuteModel(ToolArgs& args) {
 #endif
 
   // Initialize TVM Runner
-  auto runner = new TVMRunner(args.model, args.device);
+  auto runner = std::make_unique<TVMRunner>(args.model, args.device);
 
   // Load the model
   runner->Load();
 
   // Query Model meta Information
-  TVMMetaInfo _mInfo = runner->GetMetaInfo();
+  runner->GetMetaInfo();
 
   // // Print Meta Information
   if (args.dump_meta) runner->PrintMetaInfo();
@@ -235,7 +238,7 @@ int ExecuteModel(ToolArgs& args) {
   // Create input NDArray tensor with give input numpy files
   runner->CreateInputNDArrayFromFile(args.input);
 
-  float total_exec_time = 0;
+  double total_exec_time = 0;
 
   if (args.profile) {
     if (args.dry_run) {
@@ -246,8 +249,6 @@ int ExecuteModel(ToolArgs& args) {
       DeviceAPI::Get(DLDevice{GetTVMDevice(args.device), 0})
           ->StreamSync(DLDevice{GetTVMDevice(args.device), 0}, nullptr);
     }
-    int total_time = 0;
-
     // Timer start
     auto tstart = std::chrono::high_resolution_clock::now();
 
@@ -263,7 +264,7 @@ int ExecuteModel(ToolArgs& args) {
         ->StreamSync(DLDevice{GetTVMDevice(args.device), 0}, nullptr);
     //  Timer end
     auto tend = std::chrono::high_resolution_clock::now();
-    total_exec_time += static_cast<double>((tend - tstart).count()) / 1e6;
+    total_exec_time += std::chrono::duration<double, std::milli>(tend - tstart).count();
   } else {
     LOG(INFO) << "Executing with Input:" << args.input << " Output:" << args.output;
     // Set Input from Numpy Input
@@ -279,13 +280,13 @@ int ExecuteModel(ToolArgs& args) {
     runner->PrintStats();
   }
   auto tstart = std::chrono::high_resolution_clock::now();
-  delete runner;
+  runner.reset();
   auto tend = std::chrono::high_resolution_clock::now();
 
   if (args.profile) {
     LOG(INFO) << "Average ExecTime :" << total_exec_time / args.run_count << " ms";
-    LOG(INFO) << "Unload Time      :" << static_cast<double>((tend - tstart).count()) / 1e6
-              << " ms";
+    LOG(INFO) << "Unload Time      :"
+              << std::chrono::duration<double, std::milli>(tend - tstart).count() << " ms";
   }
   return 0;
 }

@@ -42,8 +42,9 @@ namespace runtime {
  * \brief various meta information related to the compiled TVM model.
  */
 typedef struct _TVMMetaInfo {
-  int n_inputs;
-  int n_outputs;
+  int n_inputs{0};
+  /*! \brief -1 when "main" returns a single tensor, else the tuple size. Set by Run(). */
+  int n_outputs{-1};
   std::vector<std::string> param_names;
   std::map<std::string, std::pair<std::vector<int64_t>, std::string>> input_info;
   std::map<std::string, std::pair<std::vector<int64_t>, std::string>> output_info;
@@ -85,7 +86,7 @@ class TVMRunner {
 
   // Public profiling information
   /*! Module load time */
-  int r_module_load_ms{0};
+  double r_module_load_ms{0};
   /*! Graph runtime creatint time */
   int r_graph_load_ms{0};
   /*! Params read time */

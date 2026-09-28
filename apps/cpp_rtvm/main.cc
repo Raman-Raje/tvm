@@ -271,6 +271,9 @@ int ExecuteModel(ToolArgs& args) {
     runner->SetInput();
     // Run the model
     runner->Run();
+    // Device kernels may execute asynchronously.  Ensure outputs are ready before copying them.
+    DeviceAPI::Get(DLDevice{GetTVMDevice(args.device), 0})
+        ->StreamSync(DLDevice{GetTVMDevice(args.device), 0}, nullptr);
     // Get Output as Numpy dump
     runner->GetOutput(args.output);
   }
@@ -303,13 +306,21 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  ToolArgs args;
-  ParseCmdArgs(argc, argv, args);
-  PrintArgs(args);
-
-  if (ExecuteModel(args)) {
+  try {
+    ToolArgs args;
+    ParseCmdArgs(argc, argv, args);
     PrintArgs(args);
-    LOG(INFO) << kUsage;
+
+    if (ExecuteModel(args)) {
+      PrintArgs(args);
+      LOG(INFO) << kUsage;
+      return -1;
+    }
+  } catch (const tvm::ffi::Error& error) {
+    LOG(ERROR) << error.message();
+    return -1;
+  } catch (const std::exception& error) {
+    LOG(ERROR) << error.what();
     return -1;
   }
   return 0;

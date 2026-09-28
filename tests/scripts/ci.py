@@ -630,6 +630,19 @@ generated = [
             ),
         },
     ),
+    generate_command(
+        name="adreno",
+        help="Run Adreno build (host compiler + Android target binaries)",
+        post_build=["./tests/scripts/task_build_adreno_bins.sh"],
+        additional_flags={
+            "--volume": os.environ.get("ADRENO_OPENCL", "/tmp/") + ":/adreno-opencl",
+            "--net": "host",
+        },
+        env={
+            "ADRENO_OPENCL": "/adreno-opencl",
+        },
+        options={},
+    ),
 ]
 
 

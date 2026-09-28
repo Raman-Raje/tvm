@@ -87,32 +87,32 @@ enum class PayloadType : uint32_t {
 };
 
 const Op& IketMarkOp() {
-  static const Op& op = Op::Get("tirx.cuda.iket_mark");
+  static const Op op = Op::Get("tirx.cuda.iket_mark");
   return op;
 }
 
 const Op& IketRangeStartOp() {
-  static const Op& op = Op::Get("tirx.cuda.iket_range_start");
+  static const Op op = Op::Get("tirx.cuda.iket_range_start");
   return op;
 }
 
 const Op& IketRangeEndOp() {
-  static const Op& op = Op::Get("tirx.cuda.iket_range_end");
+  static const Op op = Op::Get("tirx.cuda.iket_range_end");
   return op;
 }
 
 const Op& IketRangePushOp() {
-  static const Op& op = Op::Get("tirx.cuda.iket_range_push");
+  static const Op op = Op::Get("tirx.cuda.iket_range_push");
   return op;
 }
 
 const Op& IketRangePopOp() {
-  static const Op& op = Op::Get("tirx.cuda.iket_range_pop");
+  static const Op op = Op::Get("tirx.cuda.iket_range_pop");
   return op;
 }
 
 const Op& IketSentinelOp() {
-  static const Op& op = Op::Get("tirx.cuda.iket_sentinel_token");
+  static const Op op = Op::Get("tirx.cuda.iket_sentinel_token");
   return op;
 }
 
@@ -1117,13 +1117,13 @@ class InstrumentOfficialKernel : public StmtExprMutator {
   }
 
   PrimExpr Event(PrimExpr event_id) const {
-    static const Op& event_op = Op::Get("tirx.cuda.iket_official_event");
+    static const Op event_op = Op::Get("tirx.cuda.iket_official_event");
     return Call(PrimType::UInt(32), event_op,
                 {prim::cast(PrimType::UInt(32), event_id), StringImm(device_source_)});
   }
 
   PrimExpr Event(PrimExpr event_id, PrimExpr payload) const {
-    static const Op& event_op = Op::Get("tirx.cuda.iket_official_event");
+    static const Op event_op = Op::Get("tirx.cuda.iket_official_event");
     return Call(
         PrimType::UInt(32), event_op,
         {prim::cast(PrimType::UInt(32), event_id), StringImm(device_source_), std::move(payload)});
@@ -1205,11 +1205,9 @@ class InstrumentOfficialKernel : public StmtExprMutator {
 bool IketEnabled(const IRModule& module) {
   if (module->HasNonzeroAttr("tirx.iket.enabled")) return true;
   const char* child_enable = std::getenv("TVM_IKET_INJECTED_CHILD_ENABLE");
-  const char* profile = std::getenv("TVM_IKET_OFFICIAL_PROFILE");
   const char* injection = std::getenv("CUDA_INJECTION64_PATH");
   const char* injection_config = std::getenv("SMODEL_INJECTION_CONFIG");
-  return child_enable && std::string(child_enable) == "1" && profile &&
-         std::string(profile) == "cutlass-4.6.0" && injection && injection[0] != '\0' &&
+  return child_enable && std::string(child_enable) == "1" && injection && injection[0] != '\0' &&
          injection_config && injection_config[0] != '\0';
 }
 

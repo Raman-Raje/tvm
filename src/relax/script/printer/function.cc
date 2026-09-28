@@ -27,7 +27,7 @@ namespace printer {
 static bool HasDefaultExternFuncType(const relax::ExternFunc& n) {
   const auto* ty = n->ty.as<relax::FuncTypeNode>();
   if (ty == nullptr || ty->params.has_value() || ty->purity ||
-      !ty->ret->IsInstance<relax::AnyTypeNode>()) {
+      !ty->ret->IsInstance<AnyTypeNode>()) {
     return false;
   }
   return true;
@@ -151,8 +151,10 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       });
 }
 
-TVM_REGISTER_SCRIPT_AS_REPR(relax::FunctionNode, ReprPrintRelax);
-TVM_REGISTER_SCRIPT_AS_REPR(relax::ExternFuncNode, ReprPrintRelax);
+TVM_FFI_STATIC_INIT_BLOCK() {
+  TVMScriptPrinter::Register<relax::FunctionNode>(ReprPrintRelax);
+  TVMScriptPrinter::Register<relax::ExternFuncNode>(ReprPrintRelax);
+}
 
 }  // namespace printer
 }  // namespace script

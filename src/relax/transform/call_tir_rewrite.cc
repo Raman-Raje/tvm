@@ -66,10 +66,10 @@ class CallTIRMutator : public ExprMutator {
     Expr expr = VisitExprPostOrder_(call);
     call = expr.as<CallNode>();
 
-    static const Op& call_tir_op = Op::Get("relax.call_tir");
-    static const Op& call_tir_inplace_op = Op::Get("relax.call_tir_inplace");
-    static const Op& call_dps_packed_op = Op::Get("relax.call_dps_packed");
-    static const Op& alloc_tensor_op = Op::Get("relax.builtin.alloc_tensor");
+    static const Op call_tir_op = Op::Get("relax.call_tir");
+    static const Op call_tir_inplace_op = Op::Get("relax.call_tir_inplace");
+    static const Op call_dps_packed_op = Op::Get("relax.call_dps_packed");
+    static const Op alloc_tensor_op = Op::Get("relax.builtin.alloc_tensor");
     if (call->op.same_as(call_tir_op) || call->op.same_as(call_tir_inplace_op) ||
         call->op.same_as(call_dps_packed_op)) {
       bool is_inplace = call->op.same_as(call_tir_inplace_op);
@@ -176,7 +176,7 @@ class CallTIRMutator : public ExprMutator {
 
     return builder_->Emit(Call(Type::Missing(), alloc_tensor_op,
                                {tensor_ty->shape.value().as_or_throw<ShapeExpr>(),
-                                GenericConst(tensor_ty->dtype.value()->dtype, AnyType()),
+                                DataTypeImm(tensor_ty->dtype.value()->dtype),
                                 IntImm::Int64(dev_index), StringImm(scope)},
                                Attrs(), {tensor_ty}),
                           "alloc");

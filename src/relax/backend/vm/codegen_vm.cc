@@ -260,6 +260,9 @@ class CodeGenVM : public ExprFunctor<Instruction::Arg(const Expr&)> {
   Instruction::Arg VisitExpr_(const StringImmNode* op) final {
     return builder_->ConvertConstant(op->value);
   }
+  Instruction::Arg VisitExpr_(const DataTypeImmNode* op) final {
+    return builder_->ConvertConstant(op->value);
+  }
 
   Instruction::Arg VisitExpr_(const TupleNode* op) final {
     Tuple tuple = ffi::GetRef<Tuple>(op);
@@ -428,11 +431,11 @@ class CodeGenVM : public ExprFunctor<Instruction::Arg(const Expr&)> {
   /*! \brief the context module. */
   IRModule ctx_mod_;
   /*! \brief Cache ops that need to be frequently used later to reduce lookup overhead. */
-  const Op& alloc_storage_op_ = Op::Get("relax.vm.alloc_storage");
-  const Op& alloc_tensor_op_ = Op::Get("relax.vm.alloc_tensor");
-  const Op& kill_object_op_ = Op::Get("relax.vm.kill_object");
-  const Op& call_builtin_with_ctx_op_ = Op::Get("relax.call_builtin_with_ctx");
-  const Op& null_value_op_ = Op::Get("relax.null_value");
+  const Op alloc_storage_op_ = Op::Get("relax.vm.alloc_storage");
+  const Op alloc_tensor_op_ = Op::Get("relax.vm.alloc_tensor");
+  const Op kill_object_op_ = Op::Get("relax.vm.kill_object");
+  const Op call_builtin_with_ctx_op_ = Op::Get("relax.call_builtin_with_ctx");
+  const Op null_value_op_ = Op::Get("relax.null_value");
 };
 
 /*!

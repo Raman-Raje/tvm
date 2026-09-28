@@ -247,16 +247,15 @@ class WebGPUNamespace:
 webgpu = WebGPUNamespace()
 
 
-def _register_script_namespace_printer_names(ns_obj, dotted_prefix):
+def _register_script_namespace_printer_names(ns_obj, dotted_prefix, override=False):
     def register_printer_name(op_name, script_name):
         try:
-            ir.Op.get(op_name)
-        except Exception:
+            op = ir.Op.get(op_name)
+        except AttributeError:
             return
-        try:
-            _register_op_attr(op_name, "TScriptPrinterName", script_name, level=20)
-        except Exception:
-            pass
+        if op.has_attr("TScriptPrinterName") and op.get_attr("TScriptPrinterName") == script_name:
+            return
+        _register_op_attr(op_name, "TScriptPrinterName", script_name, override=override)
 
     def visit(ns_obj, dotted_prefix):
         # If the namespace object itself maps to an op via __call__
@@ -298,8 +297,19 @@ def _get_script_namespace(name: str) -> object:
     raise AttributeError(f"No script namespace {name!r}")
 
 
-def register_script_namespace(name: str, namespace: object) -> object:
-    """Register a TVMScript namespace on the TIRx builder facade."""
+def register_script_namespace(name: str, namespace: object, override: bool = False) -> object:
+    """Register a construction namespace and return it.
+
+    Parameters
+    ----------
+    name : str
+        Namespace name on the TIRx builder facade.
+    namespace : object
+        Construction namespace object.
+    override : bool, optional
+        Replace differing operator printer names if True. Existing equal names
+        are reused; other duplicates raise ValueError.
+    """
     _SCRIPT_NAMESPACES[name] = namespace
     globals()[name] = namespace
     if "__all__" in globals() and name not in __all__:
@@ -320,7 +330,7 @@ def register_script_namespace(name: str, namespace: object) -> object:
         if isinstance(module_all, list) and name not in module_all:
             module_all.append(name)
 
-    _register_script_namespace_printer_names(namespace, name)
+    _register_script_namespace_printer_names(namespace, name, override)
     return namespace
 
 
@@ -464,9 +474,6 @@ log2 = _op_wrapper(_tir_op.log2)
 log10 = _op_wrapper(_tir_op.log10)
 
 
-lookup_param = _op_wrapper(_tir_op.lookup_param)
-
-
 max_value = _op_wrapper(_tir_op.max_value)
 
 
@@ -489,12 +496,6 @@ q_multiply_shift = _op_wrapper(_tir_op.q_multiply_shift)
 
 
 q_multiply_shift_per_axis = _op_wrapper(_tir_op.q_multiply_shift_per_axis)
-
-
-continue_loop = _op_wrapper(_tir_op.continue_loop)
-
-
-break_loop = _op_wrapper(_tir_op.break_loop)
 
 
 round = _op_wrapper(_tir_op.round)  # pylint: disable=redefined-builtin
@@ -578,9 +579,6 @@ call_packed_lowered = _op_wrapper(_tir_op.call_packed_lowered)
 call_cpacked_lowered = _op_wrapper(_tir_op.call_cpacked_lowered)
 
 
-tvm_tuple = _op_wrapper(_tir_op.tvm_tuple)
-
-
 handle_add_byte_offset = _op_wrapper(_tir_op.handle_add_byte_offset)
 
 
@@ -615,9 +613,6 @@ tvm_storage_sync = _tir_op.tvm_storage_sync
 
 
 tvm_kernel_replace_point = _op_wrapper(_tir_op.tvm_kernel_replace_point)
-
-
-tvm_global_barrier_kinit = _tir_op.tvm_global_barrier_kinit
 
 
 tvm_warp_shuffle = _tir_op.tvm_warp_shuffle
@@ -657,24 +652,6 @@ TVMBackendAllocWorkspace = _op_wrapper(_tir_op.TVMBackendAllocWorkspace)
 
 
 TVMBackendFreeWorkspace = _op_wrapper(_tir_op.TVMBackendFreeWorkspace)
-
-
-start_profile_intrinsic = _op_wrapper(_tir_op.start_profile_intrinsic)
-
-
-end_profile_intrinsic = _op_wrapper(_tir_op.end_profile_intrinsic)
-
-
-anylist_getitem = _op_wrapper(_tir_op.anylist_getitem)
-
-
-anylist_resetitem = _op_wrapper(_tir_op.anylist_resetitem)
-
-
-anylist_setitem_call_packed = _op_wrapper(_tir_op.anylist_setitem_call_packed)
-
-
-anylist_setitem_call_cpacked = _op_wrapper(_tir_op.anylist_setitem_call_cpacked)
 
 
 vscale = _op_wrapper(_tir_op.vscale)
@@ -915,10 +892,6 @@ __all__ = [
     "acos",
     "acosh",
     "address_of",
-    "anylist_getitem",
-    "anylist_resetitem",
-    "anylist_setitem_call_cpacked",
-    "anylist_setitem_call_packed",
     "asin",
     "asinh",
     "assume",
@@ -929,7 +902,6 @@ __all__ = [
     "bitwise_not",
     "bitwise_or",
     "bitwise_xor",
-    "break_loop",
     "broadcast",
     "call_cpacked",
     "call_cpacked_lowered",
@@ -947,7 +919,6 @@ __all__ = [
     "ceildiv",
     "clz",
     "comm_reducer",
-    "continue_loop",
     "cooperative_tensor_fill",
     "cooperative_tensor_load",
     "cooperative_tensor_multiply_accumulate",
@@ -956,7 +927,6 @@ __all__ = [
     "cos",
     "cosh",
     "dp4a",
-    "end_profile_intrinsic",
     "erf",
     "exp",
     "exp2",
@@ -988,7 +958,6 @@ __all__ = [
     "logical_and",
     "logical_not",
     "logical_or",
-    "lookup_param",
     "masked_load",
     "masked_store",
     "max",
@@ -1016,7 +985,6 @@ __all__ = [
     "sin",
     "sinh",
     "sqrt",
-    "start_profile_intrinsic",
     "tan",
     "tanh",
     "tensormap_encode_tiled",
@@ -1031,7 +999,6 @@ __all__ = [
     "tvm_call_packed",
     "tvm_call_packed_lowered",
     "tvm_fill_fragment",
-    "tvm_global_barrier_kinit",
     "tvm_kernel_replace_point",
     "tvm_load_matrix_sync",
     "tvm_mma_sync",
@@ -1045,7 +1012,6 @@ __all__ = [
     "tvm_thread_allreduce",
     "tvm_thread_invariant",
     "tvm_throw_last_error",
-    "tvm_tuple",
     "tvm_warp_activemask",
     "tvm_warp_shuffle",
     "tvm_warp_shuffle_down",

@@ -45,13 +45,6 @@
 
 namespace tvm::prim {
 
-#define TVM_TIR_REGISTER_OP(OpName)                               \
-  TVM_REGISTER_OP("tirx." OpName)                                 \
-      .set_attr<TScriptPrinterName>("TScriptPrinterName", OpName) \
-      .set_attr<TIRxOpCategory>("TIRxOpCategory", ffi::String("builtin"), /*plevel=*/1)
-
-#define TVM_TIRX_REGISTER_OP(OpName) TVM_TIR_REGISTER_OP(OpName)
-
 // Shared primitive construction and constants are declared in ir/prim/op.h.
 
 /*!
@@ -77,26 +70,12 @@ TVM_DLL Type GetType(const PrimExpr& expr);
 TVM_DLL Type GetTypeFromRuntimeDataType(DLDataType dtype);
 
 /*!
- * \brief Return from a thread.
+ * \brief Return from a GPU thread without returning a function value.
  *
  * \param span The location of this operation in the source.
- * \return The return expression.
+ * \return The thread return expression.
  */
 TVM_DLL PrimExpr thread_return(Span span = Span());
-
-/*!
- * \brief Continue current loop.
- * \param span The location of this operation in the source.
- * \return The continue loop expression.
- */
-TVM_DLL PrimExpr continue_loop(Span span = Span());
-
-/*!
- * \brief Break current loop.
- * \param span The location of this operation in the source.
- * \return The break loop expression.
- */
-TVM_DLL PrimExpr break_loop(Span span = Span());
 
 /*!
  * Get the value of infinity.

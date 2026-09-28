@@ -333,9 +333,9 @@ class TokenAllocatorMixed {
 
 /*! \brief Check if the input op is a memory op that may return the same buffer. */
 bool IsInplaceMemoryOp(const Expr& op) {
-  static const Op& reshape_op = Op::Get("relax.reshape");
-  static const Op& view_op = Op::Get("relax.memory.view");
-  static const Op& ensure_zero_offset_op = Op::Get("relax.memory.ensure_zero_offset");
+  static const Op reshape_op = Op::Get("relax.reshape");
+  static const Op view_op = Op::Get("relax.memory.view");
+  static const Op ensure_zero_offset_op = Op::Get("relax.memory.ensure_zero_offset");
   const auto* extern_func = op.as<ExternFuncNode>();
   bool is_builtin_reshape =
       extern_func != nullptr && extern_func->global_symbol == "vm.builtin.reshape";
@@ -562,8 +562,8 @@ class StorageAllocatorInit : public StorageAllocatorBaseVisitor {
   }
 
   void VisitExpr_(const CallNode* call) final {
-    static const Op& alloc_tensor_op = Op::Get("relax.builtin.alloc_tensor");
-    static const Op& call_tir_dyn_op = Op::Get("relax.vm.call_tir_dyn");
+    static const Op alloc_tensor_op = Op::Get("relax.builtin.alloc_tensor");
+    static const Op call_tir_dyn_op = Op::Get("relax.vm.call_tir_dyn");
 
     if (call->op.same_as(alloc_tensor_op)) {
       // Create a storage token for builtin alloc_tensor.
@@ -653,8 +653,7 @@ class StorageAllocatorInit : public StorageAllocatorBaseVisitor {
     const auto* shape = ty->shape.as<ShapeExprNode>();
     TVM_FFI_ICHECK_NOTNULL(shape);
     TVM_FFI_ICHECK(!ty->IsUnknownDtype());
-    TVM_FFI_ICHECK(ty->dtype.value()->dtype ==
-                   call->args[1].as_or_throw<GenericConst>()->value.cast<DLDataType>());
+    TVM_FFI_ICHECK(ty->dtype.value()->dtype == call->args[1].as_or_throw<DataTypeImm>()->value);
     TVM_FFI_ICHECK(!token_map_.count(call));
 
     // Use the upper bounds of TIR vars as their values. The upper bound shape can still be dynamic
@@ -808,7 +807,7 @@ class StorageAllocator : public StorageAllocatorBaseVisitor {
   }
 
   void VisitBinding_(const VarBindingNode* binding, const CallNode* call) final {
-    static const Op& alloc_tensor_op = Op::Get("relax.builtin.alloc_tensor");
+    static const Op alloc_tensor_op = Op::Get("relax.builtin.alloc_tensor");
     if (call->op.same_as(alloc_tensor_op)) {
       auto it = token_map_.find(call);
       TVM_FFI_ICHECK(it != token_map_.end());
@@ -937,9 +936,9 @@ class StorageAllocationRewriter : public ExprMutator {
   using ExprMutator::VisitExpr_;
 
   Expr VisitExpr_(const CallNode* call) final {
-    static const Op& alloc_tensor_op = Op::Get("relax.builtin.alloc_tensor");
-    static const Op& mem_alloc_storage = Op::Get("relax.memory.alloc_storage");
-    static const Op& mem_alloc_tensor = Op::Get("relax.memory.alloc_tensor");
+    static const Op alloc_tensor_op = Op::Get("relax.builtin.alloc_tensor");
+    static const Op mem_alloc_storage = Op::Get("relax.memory.alloc_storage");
+    static const Op mem_alloc_tensor = Op::Get("relax.memory.alloc_tensor");
     auto it = alloc_tensor2token_.find(call);
     if (it != alloc_tensor2token_.end()) {
       // Case 1. This `alloc_tensor` is planned for memory reuse.
@@ -960,7 +959,7 @@ class StorageAllocationRewriter : public ExprMutator {
         DLDataType dtype = token->dtype;
         Call alloc_storage(Type::Missing(), mem_alloc_storage,
                            {std::move(size), virtual_device_index, StringImm(token->storage_scope),
-                            GenericConst(dtype, AnyType())},
+                            DataTypeImm(dtype)},
                            Attrs());
         storage_var = builder_->Emit(alloc_storage, "storage");
         token2storage_var_[token.get()] = storage_var;
@@ -971,10 +970,9 @@ class StorageAllocationRewriter : public ExprMutator {
       // And always create a `memory.alloc_tensor` for the old `builtin.alloc_tensor`.
       PrimExpr offset = IntImm::Int64(0);
       DLDataType dtype = ty->dtype.value()->dtype;
-      return Call(
-          Type::Missing(), mem_alloc_tensor,
-          {storage_var, offset, ty->shape.value(), GenericConst(dtype, AnyType()), call->args[2]},
-          Attrs());
+      return Call(Type::Missing(), mem_alloc_tensor,
+                  {storage_var, offset, ty->shape.value(), DataTypeImm(dtype), call->args[2]},
+                  Attrs());
     } else if (plan_dynamic_output_ && call->op.same_as(alloc_tensor_op)) {
       // Case 2. For a `alloc_tensor` that is not planned for memory reuse,
       // we would still like to allocate **static** memory for the tensor.
@@ -991,7 +989,7 @@ class StorageAllocationRewriter : public ExprMutator {
       if (!IsStaticShape(shape->values)) {
         TVM_FFI_ICHECK(!ty->IsUnknownDtype());
         TVM_FFI_ICHECK_EQ(ty->dtype.value()->dtype,
-                          call->args[1].as_or_throw<GenericConst>()->value.cast<DLDataType>());
+                          call->args[1].as_or_throw<DataTypeImm>()->value);
         PrimExpr bytes = upper_bounded_shape[0];
         for (int i = 1; i < static_cast<int>(upper_bounded_shape.size()); ++i) {
           bytes *= upper_bounded_shape[i];
@@ -1005,13 +1003,13 @@ class StorageAllocationRewriter : public ExprMutator {
                            {/*size=*/ShapeExpr({bytes}),
                             /*virtual_device_index=*/call->args[2].as_or_throw<PrimExpr>(),
                             /*storage_scope=*/call->args[3].as_or_throw<StringImm>(),  //
-                            /*dtype=*/GenericConst(dtype, AnyType())});
+                            /*dtype=*/DataTypeImm(dtype)});
         Var storage = builder_->Emit(alloc_storage, "storage");
         return Call(Type::Missing(), mem_alloc_tensor,
                     {storage,  //
                      /*offset=*/IntImm::Int64(0),
                      /*shape=*/ffi::GetRef<ShapeExpr>(shape),  //
-                     /*dtype=*/GenericConst(dtype, AnyType()),
+                     /*dtype=*/DataTypeImm(dtype),
                      /*vdevice_index=*/call->args[2]});
       }
     }

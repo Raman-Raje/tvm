@@ -23,7 +23,6 @@ import pytest
 
 import tvm
 import tvm.testing
-from tvm.ir.utils import derived_object
 from tvm.s_tir.meta_schedule.space_generator import (
     PySpaceGenerator,
     ScheduleFn,
@@ -31,6 +30,7 @@ from tvm.s_tir.meta_schedule.space_generator import (
 )
 from tvm.s_tir.meta_schedule.tune_context import TuneContext
 from tvm.s_tir.schedule import Schedule
+from tvm.s_tir.utils import derived_object
 from tvm.script import s_tir as Ts
 from tvm.script import tirx as T
 
@@ -39,11 +39,11 @@ from tvm.script import tirx as T
 
 @tvm.script.ir_module
 class Matmul:
-    @Ts.prim_func
+    @Ts.function
     def main(
-        A: T.Buffer((1024, 1024), "float32"),
-        B: T.Buffer((1024, 1024), "float32"),
-        C: T.Buffer((1024, 1024), "float32"),
+        A: T.Tensor((1024, 1024), "float32"),
+        B: T.Tensor((1024, 1024), "float32"),
+        C: T.Tensor((1024, 1024), "float32"),
     ) -> None:
         T.func_attr({"global_symbol": "main"})
 

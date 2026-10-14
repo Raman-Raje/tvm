@@ -40,23 +40,23 @@ ffi::Array<Expr> GetCallArgs(const Call& call) {
   return args;
 }
 
-void CheckNumArguments(const Call& call, const BlockBuilder& ctx) {
+void CheckNumArguments(const Call& call) {
   Op op = call->op.as_or_throw<Op>();
   int expected_input = op->args_info.size();
-  if (op->allow_extra_args ? call->args.size() < op->args_info.size()
-                           : call->args.size() != op->args_info.size()) {
+  if (op->var_args_info.has_value() ? call->args.size() < op->args_info.size()
+                                    : call->args.size() != op->args_info.size()) {
     TVM_FFI_VISIT_THROW(ValueError, call)
-        << "Operator " << op << " expects " << (op->allow_extra_args ? "at least " : "")
+        << "Operator " << op << " expects " << (op->var_args_info.has_value() ? "at least " : "")
         << expected_input << " arguments"
         << ", but was called with " << call->args.size() << " arguments";
   }
 }
 
-TensorType GetInputTensorType(const Call& call, size_t i_arg, const BlockBuilder& ctx) {
+TensorType GetInputTensorType(const Call& call, size_t i_arg) {
   Op op = call->op.as_or_throw<Op>();
 
-  TVM_FFI_ICHECK(op->allow_extra_args ? call->args.size() >= op->args_info.size()
-                                      : call->args.size() == op->args_info.size())
+  TVM_FFI_ICHECK(op->var_args_info.has_value() ? call->args.size() >= op->args_info.size()
+                                               : call->args.size() == op->args_info.size())
       << "Failure caught by this check "
       << "should have previously been caught by `CheckNumArguments`";
   TVM_FFI_ICHECK_LT(i_arg, call->args.size());
@@ -77,19 +77,18 @@ TensorType GetInputTensorType(const Call& call, size_t i_arg, const BlockBuilder
   }
 }
 
-ffi::Array<TensorType> GetInputTensorType(const Call& call, const BlockBuilder& ctx) {
-  CheckNumArguments(call, ctx);
+ffi::Array<TensorType> GetInputTensorType(const Call& call) {
+  CheckNumArguments(call);
 
   Op op = call->op.as_or_throw<Op>();
   ffi::Array<TensorType> input_tensor_ty;
   for (size_t i = 0; i < call->args.size(); ++i) {
-    input_tensor_ty.push_back(GetInputTensorType(call, i, ctx));
+    input_tensor_ty.push_back(GetInputTensorType(call, i));
   }
   return input_tensor_ty;
 }
 
-ffi::Array<TensorType> GetTensorTypeFromTuple(const Call& call, const BlockBuilder& ctx,
-                                              const Expr& tup) {
+ffi::Array<TensorType> GetTensorTypeFromTuple(const Call& call, const Expr& tup) {
   const auto* tuple_ty = GetTypeAs<TupleTypeNode>(tup);
   if (tuple_ty == nullptr) {
     TVM_FFI_VISIT_THROW(TypeError, call)
@@ -176,8 +175,7 @@ ffi::Optional<ffi::Array<PrimExpr>> InferBinaryBroadcastShape(
   TVM_FFI_UNREACHABLE();
 }
 
-std::vector<int> NormalizeAxes(const Call& call, const BlockBuilder& ctx, int ndim,
-                               const ffi::Array<int64_t>& axes) {
+std::vector<int> NormalizeAxes(const Call& call, int ndim, const ffi::Array<int64_t>& axes) {
   TVM_FFI_ICHECK_NE(ndim, kUnknownNDim) << "The ndim is required to be known for this function.";
   std::vector<bool> appeared_dims_set;
   std::vector<int> axes_non_neg;
@@ -212,19 +210,21 @@ InferLayoutOutput InferLayoutUnaryEwise(
     const VarLayoutMap& var_layout_map) {
   TVM_FFI_ICHECK(NoDesiredLayout(call, desired_layouts));
   LayoutDecision layout = GetLayoutDecision(var_layout_map, call->args[0]);
-  return InferLayoutOutput({layout}, {layout}, Attrs(call->attrs));
+  return InferLayoutOutput({layout}, {layout}, call->attrs);
 }
 
-bool CanProveLayoutTransform(const SLayout& input_layout, const SLayout& desired_layout,
+bool CanProveLayoutTransform(const ffi::Optional<SLayout>& input_layout,
+                             const ffi::Optional<SLayout>& desired_layout,
                              ffi::Array<PrimExpr> shape) {
+  if (!input_layout.has_value() || !desired_layout.has_value()) return false;
   bool can_prove = true;
   try {
-    tirx::SBijectiveLayout todesired(input_layout, desired_layout);
+    tirx::SBijectiveLayout todesired(input_layout.value(), desired_layout.value());
     ffi::Array<PrimExpr> desired_shape = todesired.ForwardShape(shape);
     ffi::Array<PrimExpr> back_shape = todesired.BackwardShape(desired_shape);
     sym::Analyzer analyzer;
     for (size_t i = 0; i < shape.size(); ++i) {
-      if (tvm::prim::is_const_int(shape[i])) {
+      if (tvm::prim::IsConstInt(shape[i])) {
         if (!analyzer->CanProveEqual(shape[i], back_shape[i])) {
           can_prove = false;
           break;

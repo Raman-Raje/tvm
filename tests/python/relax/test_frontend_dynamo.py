@@ -52,19 +52,19 @@ def test_relax_dynamo():
     ### construct the database
     @tvm.script.ir_module
     class Input1_ir:
-        @Ts.prim_func
+        @Ts.function
         def main(
-            inp_0: T.Buffer((T.int64(10), T.int64(100)), "float32"),
-            param_0: T.Buffer((T.int64(100), T.int64(10)), "float32"),
-            param_1: T.Buffer(T.int64(10), "float32"),
-            compute: T.Buffer((T.int64(10), T.int64(10)), "float32"),
+            inp_0: T.Tensor((T.int64(10), T.int64(100)), "float32"),
+            param_0: T.Tensor((T.int64(100), T.int64(10)), "float32"),
+            param_1: T.Tensor(T.int64(10), "float32"),
+            compute: T.Tensor((T.int64(10), T.int64(10)), "float32"),
         ):
             # function attr dict
             T.func_attr({"tirx.noalias": True, "global_symbol": "main"})
             # body
             # with Ts.sblock("root")
-            matmul = Ts.sblock_alloc_buffer([T.int64(10), T.int64(10)], dtype="float32")
-            T_add = Ts.sblock_alloc_buffer([T.int64(10), T.int64(10)], dtype="float32")
+            matmul = Ts.sblock_alloc_tensor([T.int64(10), T.int64(10)], dtype="float32")
+            T_add = Ts.sblock_alloc_tensor([T.int64(10), T.int64(10)], dtype="float32")
             for i0, i1, k in T.grid(T.int64(10), T.int64(10), T.int64(100)):
                 with Ts.sblock("matmul"):
                     v_i0, v_i1, v_k = Ts.axis.remap("SSR", [i0, i1, k])

@@ -30,15 +30,15 @@ from tvm.target import Target
 
 @tvm.script.ir_module
 class Add:
-    @Ts.prim_func
+    @Ts.function
     def main(
-        A: T.Buffer([2048, 2048, 2048], dtype="float32"),
-        B: T.Buffer([2048, 2048, 2048], dtype="float32"),
+        A: T.Tensor([2048, 2048, 2048], dtype="float32"),
+        B: T.Tensor([2048, 2048, 2048], dtype="float32"),
     ) -> None:
         # function attr dict
         T.func_attr({"global_symbol": "main"})
 
-        A_cached = Ts.sblock_alloc_buffer([2048, 2048, 2048], dtype="float32")
+        A_cached = Ts.sblock_alloc_tensor([2048, 2048, 2048], dtype="float32")
         # body
         for i, j, k in T.grid(2048, 2048, 2048):
             with Ts.sblock("move"):
@@ -60,16 +60,16 @@ class Add:
 
 
 def test_random_compute_location():
-    @Ts.prim_func
+    @Ts.function
     def add_0(
-        A: T.Buffer((2048, 2048, 2048), "float32"),
-        B: T.Buffer((2048, 2048, 2048), "float32"),
+        A: T.Tensor((2048, 2048, 2048), "float32"),
+        B: T.Tensor((2048, 2048, 2048), "float32"),
     ) -> None:
         # function attr dict
         T.func_attr({"global_symbol": "main"})
         # body
         # with Ts.sblock("root")
-        A_cached = Ts.sblock_alloc_buffer([2048, 2048, 2048], dtype="float32")
+        A_cached = Ts.sblock_alloc_tensor([2048, 2048, 2048], dtype="float32")
         for i0, j0, i1, j1, k0, i2 in T.grid(128, 64, 4, 4, 64, 4):
             for ax0, ax1, ax2 in T.grid(1, 8, 32):
                 with Ts.sblock("move"):

@@ -26,11 +26,31 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
+#include <tvm/relax/op_attr_types.h>
 
 #include <utility>
 
 namespace tvm {
 namespace relax {
+
+void ROIAlignAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<ROIAlignAttrs>()
+      .def_ro("pooled_size", &ROIAlignAttrs::pooled_size, "Output size of roi align.")
+      .def_ro("spatial_scale", &ROIAlignAttrs::spatial_scale,
+              "Ratio of input feature map height (or width) to raw image height (or width).")
+      .def_ro("sample_ratio", &ROIAlignAttrs::sample_ratio,
+              "Optional sampling ratio of ROI align, using adaptive size by default.",
+              refl::DefaultValue(-1))
+      .def_ro("aligned", &ROIAlignAttrs::aligned,
+              "Whether to use the aligned ROIAlign semantics without the legacy 1-pixel clamp.",
+              refl::DefaultValue(false))
+      .def_ro("layout", &ROIAlignAttrs::layout, "Dimension ordering of the input data.",
+              refl::DefaultValue(ffi::String("NCHW")))
+      .def_ro("mode", &ROIAlignAttrs::mode, "Mode for ROI Align. Can be 'avg' or 'max'.",
+              refl::DefaultValue(ffi::String("avg")));
+}
 
 TVM_FFI_STATIC_INIT_BLOCK() { ROIAlignAttrs::RegisterReflection(); }
 
@@ -60,7 +80,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.vision.roi_align", roi_align);
 }
 
-Type InferTypeROIAlign(const Call& call, const BlockBuilder& ctx) {
+Type InferTypeROIAlign(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
+  if (RequiresTensorInputNormalization(call)) return Type::Missing();
   if (call->args.size() != 2) {
     TVM_FFI_VISIT_THROW(ValueError, call)
         << "ROIAlign expects two arguments, while the given number of arguments is "
@@ -130,13 +152,15 @@ Type InferTypeROIAlign(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.vision.roi_align")
-      .add_arg("data", "The input tensor.")
-      .add_arg("rois",
-               "The input rois with shape (num_roi, 5) in [batch_idx, x1, y1, x2, y2] format.")
-      .attrs_type<ROIAlignAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeROIAlign)
-      .set_attr<TMixedPrecisionPolicy>("TMixedPrecisionPolicy", MixedPrecisionPolicyKind::kFollow)
-      .set_attr<bool>("FPurity", true);
+      .signature(
+          sig::arg("data", "The input tensor."),
+          sig::arg("rois",
+                   "The input rois with shape (num_roi, 5) in [batch_idx, x1, y1, x2, y2] format."),
+          sig::call_attrs<ROIAlignAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType, FInferType::FromNative<&InferTypeROIAlign>())
+      .set_attr<TMixedPrecisionPolicy>(tvm::relax::op_attr::kMixedPrecisionPolicy,
+                                       MixedPrecisionPolicyKind::kFollow)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 }  // namespace relax

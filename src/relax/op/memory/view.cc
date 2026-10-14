@@ -26,6 +26,8 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
+#include <tvm/relax/op_attr_types.h>
 
 namespace tvm {
 namespace relax {
@@ -383,8 +385,7 @@ Expr LowerBuiltinView(const BlockBuilder& bb, const Call& call) {
     relative_byte_offset = IntImm::Int64(0);
   }
 
-  TypeDeriveFunc infer_ty_env_func;
-  infer_ty_env_func = EnvFunc::Get("tvm.relax.type.infer_view_ty");
+  TypeDeriveFunc infer_ty_env_func(EnvFunc::Get("tvm.relax.type.infer_view_ty"));
   auto runtime_view_ty = FuncType::OpaqueFunc(infer_ty_env_func, true);
 
   ExternFunc runtime_view_func("runtime.TVMTensorCreateView", runtime_view_ty);
@@ -394,15 +395,14 @@ Expr LowerBuiltinView(const BlockBuilder& bb, const Call& call) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.memory.view")
-      .add_arg("x", "The input tensor.")
-      .add_arg("shape", "The view's shape.")
-      .add_arg("dtype", "The view's data type.")
-      .add_arg("relative_byte_offset",
-               "The view's byte offset, relative to the input tensor's byte offset.")
-      .set_attr<bool>("RequiresArgumentShapes", false)
-      .set_attr<FInferType>("FInferType", InferTypeView)
-      .set_attr<bool>("FPurity", true)
-      .set_attr<FLowerBuiltin>("FLowerBuiltin", LowerBuiltinView);
+      .signature(sig::arg("x", "The input tensor."), sig::arg("shape", "The view's shape."),
+                 sig::arg("dtype", "The view's data type."),
+                 sig::arg("relative_byte_offset",
+                          "The view's byte offset, relative to the input tensor's byte offset."))
+      .set_attr<bool>(tvm::relax::op_attr::kRequiresArgumentShapes, false)
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder, InferTypeView)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true)
+      .set_attr<FLowerBuiltin>(tvm::relax::op_attr::kLowerBuiltin, LowerBuiltinView);
 }
 
 Expr ensure_zero_offset(const Expr& x) {
@@ -415,7 +415,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.memory.ensure_zero_offset", ensure_zero_offset);
 }
 
-Type InferTypeEnsureZeroOffset(const Call& call, const BlockBuilder& ctx) {
+Type InferTypeEnsureZeroOffset(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
   if (call->args.size() != 1) {
     TVM_FFI_VISIT_THROW(ValueError, call)
         << "Operator " << call->op << " should receive 1 argument, "
@@ -426,16 +427,18 @@ Type InferTypeEnsureZeroOffset(const Call& call, const BlockBuilder& ctx) {
 
 Expr LowerBuiltinEnsureZeroOffset(const BlockBuilder& bb, const Call& call) {
   const ExternFunc builtin_ensure_zero_offset_{"vm.builtin.ensure_zero_offset"};
-  return Call(Type::Missing(), builtin_ensure_zero_offset_, call->args, Attrs(), {GetType(call)});
+  return Call(Type::Missing(), builtin_ensure_zero_offset_, call->args, std::nullopt,
+              {GetType(call)});
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.memory.ensure_zero_offset")
-      .add_arg("x", "The input tensor.")
-      .set_attr<bool>("RequiresArgumentShapes", false)
-      .set_attr<FInferType>("FInferType", InferTypeEnsureZeroOffset)
-      .set_attr<bool>("FPurity", true)
-      .set_attr<FLowerBuiltin>("FLowerBuiltin", LowerBuiltinEnsureZeroOffset);
+      .signature(sig::arg("x", "The input tensor."))
+      .set_attr<bool>(tvm::relax::op_attr::kRequiresArgumentShapes, false)
+      .set_attr<FInferType>(tvm::op_attr::kInferType,
+                            FInferType::FromNative<&InferTypeEnsureZeroOffset>())
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true)
+      .set_attr<FLowerBuiltin>(tvm::relax::op_attr::kLowerBuiltin, LowerBuiltinEnsureZeroOffset);
 }
 
 }  // namespace relax

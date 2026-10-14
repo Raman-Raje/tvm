@@ -42,11 +42,11 @@ from tvm.target import Target
 
 @script.ir_module
 class MatmulModule:
-    @Ts.prim_func
+    @Ts.function
     def matmul(
-        A: T.Buffer((1024, 1024), "float32"),
-        B: T.Buffer((1024, 1024), "float32"),
-        C: T.Buffer((1024, 1024), "float32"),
+        A: T.Tensor((1024, 1024), "float32"),
+        B: T.Tensor((1024, 1024), "float32"),
+        C: T.Tensor((1024, 1024), "float32"),
     ) -> None:  # pylint: disable=no-self-argument
         T.func_attr({"global_symbol": "matmul", "tirx.noalias": True})
 
@@ -60,15 +60,15 @@ class MatmulModule:
 
 @script.ir_module
 class MatmulReluModule:
-    @Ts.prim_func
+    @Ts.function
     def matmul_relu(  # pylint: disable=no-self-argument
-        A: T.Buffer((1024, 1024), "float32"),
-        B: T.Buffer((1024, 1024), "float32"),
-        D: T.Buffer((1024, 1024), "float32"),
+        A: T.Tensor((1024, 1024), "float32"),
+        B: T.Tensor((1024, 1024), "float32"),
+        D: T.Tensor((1024, 1024), "float32"),
     ) -> None:
         T.func_attr({"global_symbol": "matmul_relu", "tirx.noalias": True})
 
-        C = Ts.sblock_alloc_buffer((1024, 1024), "float32")
+        C = Ts.sblock_alloc_tensor((1024, 1024), "float32")
         for i, j, k in T.grid(1024, 1024, 1024):
             with Ts.sblock("matmul"):
                 vi, vj, vk = Ts.axis.remap("SSR", [i, j, k])
@@ -83,9 +83,11 @@ class MatmulReluModule:
 
 @script.ir_module
 class BatchMatmulModule:
-    @Ts.prim_func
+    @Ts.function
     def batch_matmul(  # pylint: disable=no-self-argument
-        A: T.Buffer([16, 128, 128]), B: T.Buffer([16, 128, 128]), C: T.Buffer([16, 128, 128])
+        A: T.Tensor([16, 128, 128], "float32"),
+        B: T.Tensor([16, 128, 128], "float32"),
+        C: T.Tensor([16, 128, 128], "float32"),
     ) -> None:
         T.func_attr({"global_symbol": "batch_matmul", "tirx.noalias": True})
 

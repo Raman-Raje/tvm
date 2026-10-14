@@ -26,7 +26,8 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
-#include <tvm/relax/attrs/ccl.h>
+#include <tvm/relax/op/ccl.h>
+#include <tvm/relax/op_attr_types.h>
 #include <tvm/topi/einsum.h>
 
 #include <algorithm>
@@ -39,15 +40,23 @@ namespace tvm {
 namespace relax {
 using namespace tvm::prim;
 
+void DistributionAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<DistributionAttrs>()
+      .def_ro("device_mesh", &DistributionAttrs::device_mesh,
+              "The device mesh of a tensor's distribution plan")
+      .def_ro("placement", &DistributionAttrs::placement,
+              "The placement of a tensor's distribution plan");
+}
+
 TVM_FFI_STATIC_INIT_BLOCK() { DistributionAttrs::RegisterReflection(); }
 
 /* relax.dist.annotate_sharding */
 
 Expr annotate_sharding(Expr input, distributed::DeviceMesh device_mesh,
                        distributed::Placement placement) {
-  ffi::ObjectPtr<DistributionAttrs> attrs = ffi::make_object<DistributionAttrs>();
-  attrs->device_mesh = device_mesh;
-  attrs->placement = placement;
+  ffi::ObjectPtr<DistributionAttrs> attrs =
+      ffi::make_object<DistributionAttrs>(device_mesh, placement);
 
   static const Op op = Op::Get("relax.dist.annotate_sharding");
   return Call(Type::Missing(), op, {std::move(input)}, Attrs(attrs), {});
@@ -64,19 +73,20 @@ Type InferTypeAnnotateSharding(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.dist.annotate_sharding")
-      .add_arg("input", "The input tensor.")
-      .set_attr<FInferType>("FInferType", InferTypeAnnotateSharding)
-      .set_attr<FInferType>("dist.FInferType", InferTypeAnnotateSharding)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("input", "The input tensor."), sig::call_attrs<DistributionAttrs>())
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder,
+                                       InferTypeAnnotateSharding)
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::distributed::op_attr::kInferTypeWithBuilder,
+                                       InferTypeAnnotateSharding)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.dist.redistribute */
 
 Expr redistribute(Expr input, distributed::DeviceMesh device_mesh,
                   distributed::Placement placement) {
-  ffi::ObjectPtr<DistributionAttrs> attrs = ffi::make_object<DistributionAttrs>();
-  attrs->device_mesh = device_mesh;
-  attrs->placement = placement;
+  ffi::ObjectPtr<DistributionAttrs> attrs =
+      ffi::make_object<DistributionAttrs>(device_mesh, placement);
 
   static const Op op = Op::Get("relax.dist.redistribute");
   return Call(Type::Missing(), op, {std::move(input)}, Attrs(attrs), {});
@@ -96,9 +106,10 @@ Type InferDistTypeRedistribute(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.dist.redistribute")
-      .add_arg("input", "The input tensor.")
-      .set_attr<FInferType>("dist.FInferType", InferDistTypeRedistribute)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("input", "The input tensor."), sig::call_attrs<DistributionAttrs>())
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::distributed::op_attr::kInferTypeWithBuilder,
+                                       InferDistTypeRedistribute)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 Type InferTypeCallTIRLocalView(const Call& call, const BlockBuilder& ctx) {
@@ -107,18 +118,19 @@ Type InferTypeCallTIRLocalView(const Call& call, const BlockBuilder& ctx) {
   }
   TVM_FFI_ICHECK(call->args[0]->IsInstance<GlobalVarNode>())
       << "call_tir_local_view expects the first argument to be a GlobalVar referring to a TIR "
-         "PrimFunc. "
+         "tirx::Function. "
       << "However, gets " << call->args[0];
   return call->ty_args[0];
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.dist.call_tir_local_view")
-      .add_arg("func", "The destination-passing-style function.")
-      .add_arg("args", "The input arguments.")
-      .add_ty_arg("out_type", "The output type.")
-      .set_attr<FInferType>("FInferType", InferTypeCallTIRLocalView)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("func", "The destination-passing-style function."),
+                 sig::arg("args", "The input arguments."),
+                 sig::ty_arg("out_type", "The output type."))
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder,
+                                       InferTypeCallTIRLocalView)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 Expr MakeCallTIRLocalView(Expr func, Tuple args, ffi::Array<distributed::DTensorType> out_ty_list) {
@@ -219,11 +231,12 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                         redistribute_replica_to_shard);
 
   OpDef("relax.dist.redistribute_replica_to_shard")
-      .add_arg("input", "The buffer to be sliced.")
-      .attrs_type<ScatterCollectiveAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeRtoS)
-      .set_attr<FInferType>("dist.FInferType", InferDistTypeRtoS)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("input", "The buffer to be sliced."),
+                 sig::call_attrs<ScatterCollectiveAttrs>())
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder, InferTypeRtoS)
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::distributed::op_attr::kInferTypeWithBuilder,
+                                       InferDistTypeRtoS)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 }  // namespace relax

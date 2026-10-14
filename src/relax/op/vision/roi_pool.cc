@@ -26,11 +26,23 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
+#include <tvm/relax/op_attr_types.h>
 
 #include <utility>
 
 namespace tvm {
 namespace relax {
+
+void ROIPoolAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<ROIPoolAttrs>()
+      .def_ro("pooled_size", &ROIPoolAttrs::pooled_size, "Output size of roi pool.")
+      .def_ro("spatial_scale", &ROIPoolAttrs::spatial_scale,
+              "Ratio of input feature map height (or width) to raw image height (or width).")
+      .def_ro("layout", &ROIPoolAttrs::layout, "Dimension ordering of the input data.",
+              refl::DefaultValue(ffi::String("NCHW")));
+}
 
 TVM_FFI_STATIC_INIT_BLOCK() { ROIPoolAttrs::RegisterReflection(); }
 
@@ -57,7 +69,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.vision.roi_pool", roi_pool);
 }
 
-Type InferTypeROIPool(const Call& call, const BlockBuilder& ctx) {
+Type InferTypeROIPool(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
   if (call->args.size() != 2) {
     TVM_FFI_VISIT_THROW(ValueError, call)
         << "ROIPool expects two arguments, while the given number of arguments is "
@@ -118,13 +131,15 @@ Type InferTypeROIPool(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.vision.roi_pool")
-      .add_arg("data", "The input tensor.")
-      .add_arg("rois",
-               "The input rois with shape (num_roi, 5) in [batch_idx, x1, y1, x2, y2] format.")
-      .attrs_type<ROIPoolAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeROIPool)
-      .set_attr<TMixedPrecisionPolicy>("TMixedPrecisionPolicy", MixedPrecisionPolicyKind::kFollow)
-      .set_attr<bool>("FPurity", true);
+      .signature(
+          sig::arg("data", "The input tensor."),
+          sig::arg("rois",
+                   "The input rois with shape (num_roi, 5) in [batch_idx, x1, y1, x2, y2] format."),
+          sig::call_attrs<ROIPoolAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType, FInferType::FromNative<&InferTypeROIPool>())
+      .set_attr<TMixedPrecisionPolicy>(tvm::relax::op_attr::kMixedPrecisionPolicy,
+                                       MixedPrecisionPolicyKind::kFollow)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 }  // namespace relax

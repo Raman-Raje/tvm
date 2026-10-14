@@ -17,102 +17,123 @@
  * under the License.
  */
 #include <tvm/ffi/container/shape.h>
+#include <tvm/ffi/extra/module.h>
+#include <tvm/ffi/extra/structural_equal.h>
 #include <tvm/runtime/tensor.h>
+#include <tvm/script/printer/doc_translator.h>
 
-#include "./utils.h"
+#include <algorithm>
+#include <cmath>
+#include <optional>
+#include <utility>
+#include <vector>
+
+#include "utils.h"
 
 namespace tvm {
 namespace script {
 namespace printer {
+namespace details {
 
-TVM_FFI_STATIC_INIT_BLOCK() {
-  IRDocsifier::vtable().set_dispatch<DataTypeImm>(
-      "", [](DataTypeImm n, AccessPath p, IRDocsifier d) -> Doc {
-        return TIR(d, "dtype")->Call({LiteralDoc::DataType(n->value, p->Attr("value"))});
-      });
-  IRDocsifier::vtable().set_dispatch<DataTypeImm>(
-      "ir", [](DataTypeImm n, AccessPath p, IRDocsifier d) -> Doc {
-        return IR(d, "dtype")->Call({LiteralDoc::DataType(n->value, p->Attr("value"))});
-      });
-  IRDocsifier::vtable().set_dispatch<GenericConst>(
-      "", [](GenericConst n, AccessPath p, IRDocsifier d) -> Doc {
-        if (auto dtype = n->value.as<DLDataType>()) {
-          return TIR(d, "dtype")->Call({LiteralDoc::DataType(*dtype, p->Attr("value"))});
-        }
-        if (n->value.as<runtime::Tensor>()) {
-          // Tensor-valued constants are Relax constants and keep the Relax spelling.
-          return IRDocsifier::vtable()("relax", n, p, d);
-        }
-        return d->AddMetadata(n);
-      });
+namespace {
+
+ffi::Optional<ExprDoc> DataTypeImmDocTranslate(DocTranslatorObj*, ffi::AnyView input,
+                                               const ffi::Object*) {
+  const auto* imm =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const DataTypeImmNode>(input);
+  return NamespaceDoc("tirx")->Attr("dtype")->Call(
+      {LiteralDoc::DataType(imm->value, std::nullopt)});
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
-  IRDocsifier::vtable().set_dispatch<GenericConst>(
-      "ir", [](GenericConst n, AccessPath p, IRDocsifier d) -> Doc {
-        if (auto dtype = n->value.as<DLDataType>()) {
-          return IR(d, "dtype")->Call({LiteralDoc::DataType(*dtype, p->Attr("value"))});
+  ffi::reflection::TypeAttrDef<DataTypeImmNode>().attr(
+      tvm::script::printer::type_attr::kDocTranslate,
+      FDocTranslate::FromNative<&DataTypeImmDocTranslate>());
+}
+
+}  // namespace
+
+namespace {
+
+ffi::Optional<ExprDoc> ArrayDocTranslate(DocTranslatorObj* d, ffi::AnyView input,
+                                         const ffi::Object*) {
+  return d->WithExtraStateScope<bool>(
+      "ir.explicit_value_type", true, [&]() -> ffi::Optional<ExprDoc> {
+        ffi::Array<ExprDoc> elements;
+        for (const auto& element : input.cast<ffi::Array<ffi::Any>>()) {
+          elements.push_back(d->Translate(element).value());
         }
-        return IRDocsifier::vtable()("", n, p, d);
+        return ListDoc(elements);
       });
 }
 
-TVM_FFI_STATIC_INIT_BLOCK() {
-  IRDocsifier::vtable().set_dispatch<ffi::Array<Any>>(  //
-      "", [](ffi::Array<Any> array, AccessPath p, IRDocsifier d) -> Doc {
-        int n = array.size();
-        ffi::Array<ExprDoc> results;
-        results.reserve(n);
-        for (int i = 0; i < n; ++i) {
-          results.push_back(d->AsDoc<ExprDoc>(array[i], p->ArrayItem(i)));
-        }
-        return ListDoc(results);
-      });
-}
-
-TVM_FFI_STATIC_INIT_BLOCK() {
-  IRDocsifier::vtable().set_dispatch<ffi::Map<Any, Any>>(  //
-      "", [](ffi::Map<Any, Any> dict, AccessPath p, IRDocsifier d) -> Doc {
-        using POO = std::pair<Any, Any>;
-        std::vector<POO> items{dict.begin(), dict.end()};
-        bool is_str_map = true;
-        for (const auto& kv : items) {
-          if (!kv.first.as<ffi::String>()) {
-            is_str_map = false;
-            break;
-          }
-        }
-        if (is_str_map) {
-          std::sort(items.begin(), items.end(), [](const POO& lhs, const POO& rhs) {
-            return lhs.first.as_or_throw<ffi::String>() < rhs.first.as_or_throw<ffi::String>();
+ffi::Optional<ExprDoc> MapDocTranslate(DocTranslatorObj* d, ffi::AnyView input,
+                                       const ffi::Object*) {
+  return d->WithExtraStateScope<bool>(
+      "ir.explicit_value_type", true, [&]() -> ffi::Optional<ExprDoc> {
+        auto map = input.cast<ffi::Map<ffi::Any, ffi::Any>>();
+        std::vector<std::pair<ffi::Any, ffi::Any>> entries(map.begin(), map.end());
+        if (std::all_of(entries.begin(), entries.end(), [](const auto& entry) {
+              return entry.first.template as<ffi::String>().has_value();
+            })) {
+          std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+            return a.first.template as_or_throw<ffi::String>() <
+                   b.first.template as_or_throw<ffi::String>();
           });
         }
-        int n = dict.size();
-        ffi::Array<ExprDoc> ks;
-        ffi::Array<ExprDoc> vs;
-        ks.reserve(n);
-        vs.reserve(n);
-        for (int i = 0; i < n; ++i) {
-          ks.push_back(d->AsDoc<ExprDoc>(items[i].first, p->MapItemMissing(items[i].first)));
-          vs.push_back(d->AsDoc<ExprDoc>(items[i].second, p->MapItem(items[i].first)));
+        ffi::Array<ExprDoc> keys;
+        ffi::Array<ExprDoc> values;
+        for (const auto& [key, item] : entries) {
+          keys.push_back(d->Translate(key).value());
+          values.push_back(d->Translate(item).value());
         }
-        return DictDoc(ks, vs);
+        return DictDoc(keys, values);
       });
+}
+
+ffi::Optional<ExprDoc> MetadataDocTranslate(DocTranslatorObj* d, ffi::AnyView input,
+                                            const ffi::Object*) {
+  return AddMetadata(d, input);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
-  IRDocsifier::vtable().set_dispatch<ffi::Shape>(
-      "", [](ffi::Shape n, AccessPath n_p, IRDocsifier d) -> Doc {
-        int s = n.size();
-        ffi::Array<ExprDoc> results;
-        results.reserve(s);
-        for (int i = 0; i < s; ++i) {
-          results.push_back(d->AsDoc<ExprDoc>(IntImm::Int32(n[i]), n_p->ArrayItem(i)));
-        }
-        return TupleDoc(results);
-      });
+  ffi::reflection::TypeAttrDef<ffi::ArrayObj>().attr(
+      tvm::script::printer::type_attr::kDocTranslate,
+      FDocTranslate::FromNative<&ArrayDocTranslate>());
+  ffi::reflection::TypeAttrDef<ffi::MapObj>().attr(tvm::script::printer::type_attr::kDocTranslate,
+                                                   FDocTranslate::FromNative<&MapDocTranslate>());
+  ffi::reflection::TypeAttrDef<ffi::ModuleObj>().attr(
+      tvm::script::printer::type_attr::kDocTranslate,
+      FDocTranslate::FromNative<&MetadataDocTranslate>());
+  ffi::reflection::TypeAttrDef<ffi::TensorObj>().attr(
+      tvm::script::printer::type_attr::kDocTranslate,
+      FDocTranslate::FromNative<&MetadataDocTranslate>());
 }
 
+}  // namespace
+
+namespace {
+
+ffi::Optional<ExprDoc> ShapeDocTranslate(DocTranslatorObj*, ffi::AnyView input,
+                                         const ffi::Object*) {
+  const auto* shape =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ffi::ShapeObj>(input);
+  ffi::Array<ExprDoc> dimensions;
+  for (int64_t value : ffi::GetRef<ffi::Shape>(shape)) {
+    dimensions.push_back(LiteralDoc::Int(value, std::nullopt));
+  }
+  return IdDoc("Shape")->Call(dimensions);
+}
+
+TVM_FFI_STATIC_INIT_BLOCK() {
+  ffi::reflection::TypeAttrDef<ffi::ShapeObj>().attr(
+      tvm::script::printer::type_attr::kDocTranslate,
+      FDocTranslate::FromNative<&ShapeDocTranslate>());
+}
+
+}  // namespace
+
+}  // namespace details
 }  // namespace printer
 }  // namespace script
 }  // namespace tvm

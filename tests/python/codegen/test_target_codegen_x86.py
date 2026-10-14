@@ -40,17 +40,17 @@ def test_fp16_to_fp32():
 
         @I.ir_module
         class Module:
-            @T.prim_func
+            @T.function
             def main(
-                A: T.Buffer((elements, width), "float16"),
-                B: T.Buffer((elements, width), "float32"),
+                A: T.Tensor((elements, width), "float16"),
+                B: T.Tensor((elements, width), "float32"),
             ):
                 T.func_attr({"tirx.noalias": True})
                 for i0 in range(elements):
                     for i1 in T.vectorized(width):
                         B[i0, i1] = T.Cast("float32", A[i0, i1])
 
-        f = tvm.tirx.build(Module, target=target)
+        f = tvm.tirx.compile(Module, target=target).mod
 
         assembly = f.inspect_source("asm").splitlines()
         if match:

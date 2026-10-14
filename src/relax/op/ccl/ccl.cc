@@ -21,7 +21,9 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
 #include <tvm/relax/block_builder.h>
+#include <tvm/relax/op_attr_types.h>
 
 #include <utility>
 
@@ -30,6 +32,43 @@ namespace relax {
 using namespace tvm::prim;
 
 /* relax.ccl.allreduce */
+
+void AllReduceAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<AllReduceAttrs>()
+      .def_ro("op_type", &AllReduceAttrs::op_type,
+              "The type of reduction operation to be applied to the input data. Now only sum is "
+              "supported.",
+              refl::DefaultValue(ffi::String("sum")))
+      .def_ro("in_group", &AllReduceAttrs::in_group,
+              "Whether the reduction operation performs in group or globally or in group as "
+              "default.",
+              refl::DefaultValue(true));
+}
+
+void AllGatherAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<AllGatherAttrs>()
+      .def_ro("num_workers", &AllGatherAttrs::num_workers,
+              "The number of workers, also the number of parts the given buffer should be "
+              "chunked into.")
+      .def_ro("in_group", &AllGatherAttrs::in_group,
+              "Whether the allgather operation performs in group or globally or in group as "
+              "default.",
+              refl::DefaultValue(true));
+}
+
+void ScatterCollectiveAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<ScatterCollectiveAttrs>()
+      .def_ro("num_workers", &ScatterCollectiveAttrs::num_workers,
+              "The number of workers, also the number of parts the given buffer should be "
+              "chunked into.")
+      .def_ro("axis", &ScatterCollectiveAttrs::axis,
+              "The axis of the tensor to be scattered. The tensor will be chunked along "
+              "this axis.",
+              refl::DefaultValue(0));
+}
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   AllReduceAttrs::RegisterReflection();
@@ -51,18 +90,20 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.ccl.allreduce", allreduce);
 }
 
-Type InferTypeAllReduce(const Call& call, const BlockBuilder& ctx) {
-  TensorType input_ty = GetUnaryInputTensorType(call, ctx);
+Type InferTypeAllReduce(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
+  if (RequiresTensorInputNormalization(call)) return Type::Missing();
+  TensorType input_ty = GetUnaryInputTensorType(call);
   return input_ty;
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.ccl.allreduce")
-      .add_arg("x", "Input to which allreduce will be applied.")
-      .attrs_type<AllReduceAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeAllReduce)
-      .set_attr<FRelaxInferLayout>("FRelaxInferLayout", InferLayoutUnaryEwise)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("x", "Input to which allreduce will be applied."),
+                 sig::call_attrs<AllReduceAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType, FInferType::FromNative<&InferTypeAllReduce>())
+      .set_attr<FRelaxInferLayout>(tvm::relax::op_attr::kInferLayout, InferLayoutUnaryEwise)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.ccl.allgather */
@@ -81,8 +122,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.ccl.allgather", allgather);
 }
 
-Type InferTypeAllGather(const Call& call, const BlockBuilder& ctx) {
-  TensorType input_ty = GetUnaryInputTensorType(call, ctx);
+Type InferTypeAllGather(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
+  TensorType input_ty = GetUnaryInputTensorType(call);
 
   const auto* attrs = call->attrs.as<AllGatherAttrs>();
   int num_workers = attrs->num_workers;
@@ -99,10 +141,11 @@ Type InferTypeAllGather(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.ccl.allgather")
-      .add_arg("x", "Input to which allgather will be applied.")
-      .set_attr<FInferType>("FInferType", InferTypeAllGather)
-      .set_attr<FRelaxInferLayout>("FRelaxInferLayout", InferLayoutUnaryEwise)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("x", "Input to which allgather will be applied."),
+                 sig::call_attrs<AllGatherAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType, FInferType::FromNative<&InferTypeAllGather>())
+      .set_attr<FRelaxInferLayout>(tvm::relax::op_attr::kInferLayout, InferLayoutUnaryEwise)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.ccl.broadcast_from_worker0 */
@@ -116,17 +159,19 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.ccl.broadcast_from_worker0", broadcast_from_worker0);
 }
 
-Type InferTypeBroadcastFromZero(const Call& call, const BlockBuilder& ctx) {
-  TensorType input_ty = GetUnaryInputTensorType(call, ctx);
+Type InferTypeBroadcastFromZero(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
+  TensorType input_ty = GetUnaryInputTensorType(call);
   return input_ty;
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.ccl.broadcast_from_worker0")
-      .add_arg("x", "Input to be broadcast.")
-      .set_attr<FInferType>("FInferType", InferTypeBroadcastFromZero)
-      .set_attr<FRelaxInferLayout>("FRelaxInferLayout", InferLayoutUnaryEwise)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("x", "Input to be broadcast."))
+      .set_attr<FInferType>(tvm::op_attr::kInferType,
+                            FInferType::FromNative<&InferTypeBroadcastFromZero>())
+      .set_attr<FRelaxInferLayout>(tvm::relax::op_attr::kInferLayout, InferLayoutUnaryEwise)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.ccl.scatter_from_worker0 */
@@ -171,11 +216,13 @@ Type InferTypeScatter(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.ccl.scatter_from_worker0")
-      .add_arg("x",
-               "The buffer to be divided into equal parts and sent to each worker accordingly.")
-      .attrs_type<ScatterCollectiveAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeScatter)
-      .set_attr<bool>("FPurity", true);
+      .signature(
+          sig::arg(
+              "x",
+              "The buffer to be divided into equal parts and sent to each worker accordingly."),
+          sig::call_attrs<ScatterCollectiveAttrs>())
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder, InferTypeScatter)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 }  // namespace relax

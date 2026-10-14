@@ -26,7 +26,9 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
 #include <tvm/relax/analysis.h>
+#include <tvm/relax/op_attr_types.h>
 #include <tvm/runtime/logging.h>
 #include <tvm/topi/transform.h>
 
@@ -39,6 +41,24 @@
 namespace tvm {
 namespace relax {
 using namespace tvm::prim;
+
+void TakeAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TakeAttrs>()
+      .def_ro("axis", &TakeAttrs::axis, "The axis over which to select values.",
+              refl::DefaultValue(ffi::Optional<int64_t>{}))
+      .def_ro("mode", &TakeAttrs::mode, "The mode for handling out-of-bounds indices.",
+              refl::DefaultValue("fast"));
+}
+
+void StridedSliceAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<StridedSliceAttrs>().def_ro(
+      "assume_inbound", &StridedSliceAttrs::assume_inbound,
+      "Whether to assume the indices are in bound. If it is set to false, "
+      "out of bound indices will be clipped to the bound.",
+      refl::DefaultValue(true));
+}
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   TakeAttrs::RegisterReflection();
@@ -61,9 +81,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.take", take);
 }
 
-Type InferTypeTake(const Call& call, const BlockBuilder& ctx) {
-  CheckNumArguments(call, ctx);
-  TensorType data_ty = GetInputTensorType(call, 0, ctx);
+Type InferTypeTake(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
+  if (RequiresTensorInputNormalization(call)) return Type::Missing();
+  CheckNumArguments(call);
+  TensorType data_ty = GetInputTensorType(call, 0);
 
   // Type inference when the index is a PrimExpr is equivalent
   // to that of a scalar (0-d) tensor.
@@ -108,7 +130,7 @@ Type InferTypeTake(const Call& call, const BlockBuilder& ctx) {
 
   int axis = 0;
   if (attrs->axis.has_value()) {
-    axis = NormalizeAxis(call, ctx, data_ty->ndim, attrs->axis.value());
+    axis = NormalizeAxis(call, data_ty->ndim, attrs->axis.value());
   }
   const auto* data_shape = data_ty->shape.as<ShapeExprNode>();
   const auto* indices_shape = indices_ty->shape.as<ShapeExprNode>();
@@ -129,11 +151,11 @@ Type InferTypeTake(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.take")
-      .add_arg("x", "The source tensor.")
-      .add_arg("indices", "The indices of the values to extract.")
-      .attrs_type<TakeAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeTake)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("x", "The source tensor."),
+                 sig::arg("indices", "The indices of the values to extract."),
+                 sig::call_attrs<TakeAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType, FInferType::FromNative<&InferTypeTake>())
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.strided_slice */
@@ -466,7 +488,8 @@ InferLayoutOutput InferLayoutStridedSlice(
       << " of unknown dimensionality.";
   LayoutDecision existing_layout = GetLayoutDecision(var_layout_map, call->args[0]);
   // Can't handle sub indexed layouts.
-  if (existing_layout->layout.ndim() != existing_layout->layout.ndim_primal()) {
+  if ((existing_layout->layout.has_value() ? existing_layout->layout.value().ndim() : 0) !=
+      (existing_layout->layout.has_value() ? existing_layout->layout.value().ndim_primal() : 0)) {
     existing_layout = LayoutDecision(InitialLayout(tensor_ty->ndim));
   }
 
@@ -479,7 +502,7 @@ InferLayoutOutput InferLayoutStridedSlice(
 
   ffi::Array<Expr> new_axes;
   for (const auto& axis : axes_tuple) {
-    int new_axis = FindAxis(existing_layout->layout, axis->value.as<int>().value());
+    int new_axis = FindAxis(existing_layout->layout.value(), axis->value.as<int>().value());
     new_axes.push_back(IntImm::Int64(new_axis));
   }
 
@@ -489,16 +512,15 @@ InferLayoutOutput InferLayoutStridedSlice(
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.strided_slice")
-      .add_arg("x", "The source tensor to be sliced.")
-      .add_arg("axes", "The axes.")
-      .add_arg("begin", "The start index.")
-      .add_arg("end", "The end index.")
-      .allow_extra_args()
-      .attrs_type<StridedSliceAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeStridedSlice)
-      .set_attr<FRelaxInferLayout>("FRelaxInferLayout", InferLayoutStridedSlice)
-      .set_attr<TMixedPrecisionPolicy>("TMixedPrecisionPolicy", MixedPrecisionPolicyKind::kFollow)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("x", "The source tensor to be sliced."), sig::arg("axes", "The axes."),
+                 sig::arg("begin", "The start index."), sig::arg("end", "The end index."),
+                 sig::var_args("args"), sig::call_attrs<StridedSliceAttrs>())
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder,
+                                       InferTypeStridedSlice)
+      .set_attr<FRelaxInferLayout>(tvm::relax::op_attr::kInferLayout, InferLayoutStridedSlice)
+      .set_attr<TMixedPrecisionPolicy>(tvm::relax::op_attr::kMixedPrecisionPolicy,
+                                       MixedPrecisionPolicyKind::kFollow)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.dynamic_strided_slice */
@@ -516,7 +538,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.dynamic_strided_slice", dynamic_strided_slice);
 }
 
-Type InferTypeDynStridedSlice(const Call& call, const BlockBuilder& ctx) {
+Type InferTypeDynStridedSlice(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
+  if (RequiresTensorInputNormalization(call)) return Type::Missing();
   const auto* data_ty = GetTypeAs<TensorTypeNode>(call->args[0]);
   const auto* begin_ty = GetTypeAs<TensorTypeNode>(call->args[1]);
   const auto* end_ty = GetTypeAs<TensorTypeNode>(call->args[2]);
@@ -586,20 +610,22 @@ InferLayoutOutput InferLayoutDynStridedSlice(
   // Since begin/end/strides are dynamic tensors, we cannot transform
   // them at compile time. Fall back to the initial layout.
   LayoutDecision initial = LayoutDecision(InitialLayout(ndim));
-  return InferLayoutOutput({initial}, {initial}, Attrs());
+  return InferLayoutOutput({initial}, {initial}, std::nullopt);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.dynamic_strided_slice")
-      .add_arg("x", "The source tensor to be sliced.")
-      .add_arg("begin", "The indices to begin with in the slicing.")
-      .add_arg("end", "Indices indicating end of the slice.")
-      .add_arg("strides", "The stride values.")
-      .set_attr<FInferType>("FInferType", InferTypeDynStridedSlice)
-      .set_attr<FRelaxInferLayout>("FRelaxInferLayout", InferLayoutDynStridedSlice)
-      .set_attr<TMixedPrecisionPolicy>("TMixedPrecisionPolicy", MixedPrecisionPolicyKind::kFollow)
-      .set_attr<bool>("FPurity", true)
-      .set_attr<bool>("FDataDependent", true);
+      .signature(sig::arg("x", "The source tensor to be sliced."),
+                 sig::arg("begin", "The indices to begin with in the slicing."),
+                 sig::arg("end", "Indices indicating end of the slice."),
+                 sig::arg("strides", "The stride values."))
+      .set_attr<FInferType>(tvm::op_attr::kInferType,
+                            FInferType::FromNative<&InferTypeDynStridedSlice>())
+      .set_attr<FRelaxInferLayout>(tvm::relax::op_attr::kInferLayout, InferLayoutDynStridedSlice)
+      .set_attr<TMixedPrecisionPolicy>(tvm::relax::op_attr::kMixedPrecisionPolicy,
+                                       MixedPrecisionPolicyKind::kFollow)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true)
+      .set_attr<bool>(tvm::relax::op_attr::kDataDependent, true);
 }
 
 }  // namespace relax

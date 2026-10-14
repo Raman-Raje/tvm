@@ -26,6 +26,7 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/relax/op_attr_types.h>
 
 #include <utility>
 
@@ -34,6 +35,16 @@
 
 namespace tvm {
 namespace relax {
+
+void QuantizeAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<QuantizeAttrs>()
+      .def_ro("out_dtype", &QuantizeAttrs::out_dtype, "Output data type.")
+      .def_ro("axis", &QuantizeAttrs::axis,
+              "The output channel axis for channel wise quantization/dequantization. "
+              "Default value is -1, which corresponds to the last axis.",
+              refl::DefaultValue(-1));
+}
 
 TVM_FFI_STATIC_INIT_BLOCK() { QuantizeAttrs::RegisterReflection(); }
 
@@ -157,12 +168,13 @@ Type InferTypeQuantize(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.quantize")
-      .add_arg("data", "The input tensor.")
-      .add_arg("scale", "The quantization scale of the output tensor.")
-      .add_arg("zero_point", "The quantization zero_point of the output tensor.")
-      .attrs_type<QuantizeAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeQuantize)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("data", "The input tensor."),
+                 sig::arg("scale", "The quantization scale of the output tensor."),
+                 sig::arg("zero_point", "The quantization zero_point of the output tensor."),
+                 sig::call_attrs<QuantizeAttrs>())
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder,
+                                       InferTypeQuantize)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.dequantize */
@@ -280,12 +292,13 @@ Type InferTypeDequantize(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.dequantize")
-      .add_arg("data", "The input tensor.")
-      .add_arg("scale", "The quantization scale of the input tensor.")
-      .add_arg("zero_point", "The quantization zero_point of the input tensor.")
-      .attrs_type<QuantizeAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeDequantize)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("data", "The input tensor."),
+                 sig::arg("scale", "The quantization scale of the input tensor."),
+                 sig::arg("zero_point", "The quantization zero_point of the input tensor."),
+                 sig::call_attrs<QuantizeAttrs>())
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder,
+                                       InferTypeDequantize)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 }  // namespace relax

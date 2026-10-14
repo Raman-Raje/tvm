@@ -73,6 +73,9 @@ class ExprFunctor<R(const Expr&, Args...)> {
     return (*vtable_)(node, this, std::forward<Args>(args)...);
   }
 
+  virtual R Dispatch_(const LambdaExprNode* node, Args... args) {
+    return DispatchDefault_(node, std::forward<Args>(args)...);
+  }
   virtual R Dispatch_(const OpaqueExprNode* node, Args... args) {
     return DispatchDefault_(node, std::forward<Args>(args)...);
   }
@@ -230,6 +233,7 @@ class ExprFunctor<R(const Expr&, Args...)> {
    * \param vtable The table to initialize before adding derived registrations.
    */
   static void InitVTable(VTable* vtable) {
+    SetDispatch<TSelf, LambdaExprNode>(vtable);
     SetDispatch<TSelf, OpaqueExprNode>(vtable);
     SetDispatch<TSelf, TupleNode>(vtable);
     SetDispatch<TSelf, TupleGetItemNode>(vtable);
@@ -329,7 +333,7 @@ class ExprFunctor<R(const Expr&, Args...)> {
  * \endcode
  * Use tvm::ExprVisitor explicitly when dialect visitors are also in scope.
  */
-class TVM_DLL ExprVisitor : public ObjectVisitor {
+class TVM_TIRX_DLL ExprVisitor : public ObjectVisitor {
  public:
   /*! \brief Construct a visitor with the core expression hooks. */
   TVM_DEFINE_OBJECT_FUNCTOR_DEFAULT_CONSTRUCTOR(ExprVisitor, ObjectVisitor)
@@ -424,7 +428,7 @@ class TVM_DLL ExprVisitor : public ObjectVisitor {
  * \endcode
  * Use tvm::ExprMutator explicitly when dialect mutators are also in scope.
  */
-class TVM_DLL ExprMutator : public ObjectMutator {
+class TVM_TIRX_DLL ExprMutator : public ObjectMutator {
  public:
   /*! \brief Construct a mutator with the core expression hooks. */
   TVM_DEFINE_OBJECT_FUNCTOR_DEFAULT_CONSTRUCTOR(ExprMutator, ObjectMutator)
@@ -510,6 +514,19 @@ class TVM_DLL ExprMutator : public ObjectMutator {
   virtual UnchangedOr<PrimExpr> Mutate_(const prim::ShuffleNode* node, InplaceMode inplace_mode);
 
  protected:
+  /*!
+   * \brief Reinfer the result type of a Call after ordinary mutation.
+   * \param mutated The ordinary mutation result, or Unchanged for the original Call.
+   * \param original The borrowed Call before ordinary mutation.
+   * \param inplace_mode Permission to modify the original Call in place.
+   * \return The combined mutation result, preserving Unchanged when possible.
+   * \note A unique replacement Call may be updated in place even when the original
+   *       could not be. Inference errors propagate to the caller.
+   */
+  static UnchangedOr<Expr> ReinferMutatedCallType(UnchangedOr<Expr> mutated,
+                                                  const CallNode* original,
+                                                  InplaceMode inplace_mode);
+
   /*!
    * \brief Construct a mutator with an extended native dispatch table.
    * \param vtable The finalized table, which must outlive this mutator.

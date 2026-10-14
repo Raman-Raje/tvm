@@ -511,7 +511,7 @@ def test_cyclic_dependency():
 
 def test_bind_params():
     weight_np = np.random.randn(64, 64, 3, 3).astype("float32")
-    mod = tvm.transform.Sequential(
+    mod = tvm.ir.transform.Sequential(
         [
             relax.transform.BindParams("main", {"weight1": weight_np}),
             relax.transform.FuseOpsByPattern(
@@ -701,10 +701,10 @@ def test_multiple_entries_multiple_calls_same_extern():
 def test_ignore_call_tir():
     @I.ir_module
     class Conv2dReLUCallTIR:
-        @Ts.prim_func
+        @Ts.function
         def relu(
-            data: T.Buffer((1, 64, 56, 56), "float32"),
-            out: T.Buffer((1, 64, 56, 56), "float32"),
+            data: T.Tensor((1, 64, 56, 56), "float32"),
+            out: T.Tensor((1, 64, 56, 56), "float32"),
         ):
             for ax0, ax1, ax2, ax3 in T.grid(1, 64, 56, 56):
                 with Ts.sblock("root"):
@@ -721,7 +721,7 @@ def test_ignore_call_tir():
                 relu1 = R.call_tir(
                     Conv2dReLUCallTIR.relu,
                     (conv1,),
-                    R.Tensor((1, 64, 56, 56), "float32"),
+                    ty_args=[R.Tensor((1, 64, 56, 56), "float32")],
                 )
                 R.output(relu1)
 
@@ -729,10 +729,10 @@ def test_ignore_call_tir():
 
     @I.ir_module
     class Conv2dReLUCallTIR_partitioned:
-        @Ts.prim_func
+        @Ts.function
         def relu(
-            data: T.Buffer((1, 64, 56, 56), "float32"),
-            out: T.Buffer((1, 64, 56, 56), "float32"),
+            data: T.Tensor((1, 64, 56, 56), "float32"),
+            out: T.Tensor((1, 64, 56, 56), "float32"),
         ):
             # with Ts.sblock("root"):
             for ax0, ax1, ax2, ax3 in T.grid(1, 64, 56, 56):
@@ -770,7 +770,7 @@ def test_ignore_call_tir():
                 relu1 = R.call_tir(
                     cls.relu,
                     (lv,),
-                    out_ty=R.Tensor((1, 64, 56, 56), dtype="float32"),
+                    ty_args=[R.Tensor((1, 64, 56, 56), dtype="float32")],
                 )
                 R.output(relu1)
             return relu1
@@ -1138,8 +1138,8 @@ def test_error_on_repeated_variable_definitions():
 
 
 def test_matmul_symbolic_var():
-    batch_size = T.dynamic("batch_size")
-    M = T.dynamic("M")
+    batch_size = T.dynamic("batch_size", "int64")
+    M = T.dynamic("M", "int64")
 
     @I.ir_module
     class Before:
@@ -1156,11 +1156,11 @@ def test_matmul_symbolic_var():
                 R.output(out)
             return out
 
-    batch_size_main = T.dynamic("batch_size")
-    M_main = T.dynamic("M")
-    batch_size_fused_relax_matmul_cublas = T.dynamic("batch_size")
-    batch_size_fused_relax_matmul1_cublas = T.dynamic("batch_size")
-    M_fused_relax_matmul1_cublas = T.dynamic("M")
+    batch_size_main = T.dynamic("batch_size", "int64")
+    M_main = T.dynamic("M", "int64")
+    batch_size_fused_relax_matmul_cublas = T.dynamic("batch_size", "int64")
+    batch_size_fused_relax_matmul1_cublas = T.dynamic("batch_size", "int64")
+    M_fused_relax_matmul1_cublas = T.dynamic("M", "int64")
 
     @I.ir_module
     class Expected:

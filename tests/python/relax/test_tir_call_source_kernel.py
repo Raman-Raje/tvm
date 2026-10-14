@@ -42,16 +42,16 @@ extern "C" __global__ void add_kernel(float* x, float* y, float* output, int n_e
 def test_tir_call_source_kernel():
     BLOCK_SIZE = 64
 
-    m_add = T.dynamic("m")
-    m_main = T.dynamic("m")
+    m_add = T.dynamic("m", "int64")
+    m_main = T.dynamic("m", "int64")
 
     @I.ir_module
     class Module:
-        @Ts.prim_func
+        @Ts.function
         def add(
-            x: T.Buffer((m_add,), "float32"),
-            y: T.Buffer((m_add,), "float32"),
-            output: T.Buffer((m_add,), "float32"),
+            x: T.Tensor((m_add,), "float32"),
+            y: T.Tensor((m_add,), "float32"),
+            output: T.Tensor((m_add,), "float32"),
         ) -> None:
             T.func_attr({"global_symbol": "add"})
 
@@ -71,16 +71,22 @@ def test_tir_call_source_kernel():
         @R.function
         def main(x: R.Tensor((m_main,), "float32"), y: R.Tensor((m_main,), "float32")):
             with R.dataflow():
-                output = R.call_tir(Module.add, [x, y], relax.TensorType((m_main,), "float32"))
+                output = R.call_tir(
+                    Module.add, [x, y], ty_args=[relax.TensorType((m_main,), "float32")]
+                )
                 R.output(output)
             return output
 
-    m = T.dynamic("m")
+    m = T.dynamic("m", "int64")
 
     @I.ir_module
     class Parsed:
-        @Ts.prim_func
-        def add(x: T.Buffer((m,)), y: T.Buffer((m,)), output: T.Buffer((m,))):
+        @Ts.function
+        def add(
+            x: T.Tensor((m,), "float32"),
+            y: T.Tensor((m,), "float32"),
+            output: T.Tensor((m,), "float32"),
+        ):
             with Ts.sblock("root"):
                 Ts.reads(x[0:m], y[0:m])
                 Ts.writes(output[0:m])

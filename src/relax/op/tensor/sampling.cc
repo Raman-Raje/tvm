@@ -26,12 +26,21 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
 #include <tvm/relax/analysis.h>
+#include <tvm/relax/op_attr_types.h>
 
 #include <utility>
 
 namespace tvm {
 namespace relax {
+
+void MultinomialFromUniformAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<MultinomialFromUniformAttrs>().def_ro(
+      "dtype", &MultinomialFromUniformAttrs::dtype, "Data type of the output indices.",
+      refl::DefaultValue((DLDataType{kDLInt, 64, 1})));
+}
 
 TVM_FFI_STATIC_INIT_BLOCK() { MultinomialFromUniformAttrs::RegisterReflection(); }
 
@@ -54,11 +63,13 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.multinomial_from_uniform", multinomial_from_uniform);
 }
 
-Type InferTypeMultinomialFromUniform(const Call& call, const BlockBuilder& ctx) {
-  CheckNumArguments(call, ctx);
-  TensorType prob_ty = GetInputTensorType(call, 0, ctx);
-  TensorType uniform_sample_ty = GetInputTensorType(call, 1, ctx);
-  TensorType sample_indices_ty = GetInputTensorType(call, 2, ctx);
+Type InferTypeMultinomialFromUniform(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
+  if (RequiresTensorInputNormalization(call)) return Type::Missing();
+  CheckNumArguments(call);
+  TensorType prob_ty = GetInputTensorType(call, 0);
+  TensorType uniform_sample_ty = GetInputTensorType(call, 1);
+  TensorType sample_indices_ty = GetInputTensorType(call, 2);
   const auto* attrs = call->attrs.as<MultinomialFromUniformAttrs>();
 
   // Only the element kind matters here; shape inference does not depend on vector lanes.
@@ -132,8 +143,8 @@ Type InferTypeMultinomialFromUniform(const Call& call, const BlockBuilder& ctx) 
         << n << "` and the given sample_indices tensor has batch size `"
         << sample_indices_shape->values[0] << "`";
   }
-  if (!tvm::prim::is_one(uniform_sample_shape->values[1]) ||
-      !tvm::prim::is_one(sample_indices_shape->values[1])) {
+  if (!tvm::prim::IsOne(uniform_sample_shape->values[1]) ||
+      !tvm::prim::IsOne(sample_indices_shape->values[1])) {
     TVM_FFI_VISIT_THROW(ValueError, call)
         << "Multinomial_from_uniform op requires the input uniform_sample and "
            "sample_indices to be 2D tensors with the second dimension being 1. "
@@ -146,12 +157,13 @@ Type InferTypeMultinomialFromUniform(const Call& call, const BlockBuilder& ctx) 
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.multinomial_from_uniform")
-      .add_arg("prob", "The probability tensor.")
-      .add_arg("uniform_sample", "The uniform sample tensor.")
-      .add_arg("sample_indices", "The sample indices tensor.")
-      .attrs_type<MultinomialFromUniformAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeMultinomialFromUniform)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("prob", "The probability tensor."),
+                 sig::arg("uniform_sample", "The uniform sample tensor."),
+                 sig::arg("sample_indices", "The sample indices tensor."),
+                 sig::call_attrs<MultinomialFromUniformAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType,
+                            FInferType::FromNative<&InferTypeMultinomialFromUniform>())
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 }  // namespace relax

@@ -24,10 +24,10 @@ from tvm.script import tirx as T
 
 
 def test_stmt_simplify():
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def func(A: T.handle("float32"), C: T.handle("float32"), n: T.int32):
-        A_ptr = T.decl_buffer((10,), "float32", data=A)
-        C_ptr = T.decl_buffer((10,), "float32", data=C)
+        A_ptr = T.decl_tensor(A, ty_args=[T.Tensor((10,), "float32", data=A)])
+        C_ptr = T.decl_tensor(C, ty_args=[T.Tensor((10,), "float32", data=C)])
         n_val: T.let[T.int32] = 10
         for i in T.serial(n_val):
             if i < 12:
@@ -35,78 +35,71 @@ def test_stmt_simplify():
 
     mod = tvm.IRModule.from_expr(func)
     body = tvm.tirx.transform.StmtSimplify()(mod)["main"].body
-    # Navigate through DeclBuffer nodes to reach the inner body
-    while isinstance(body, tvm.tirx.DeclBuffer):
-        body = body.body
     # After simplification, Bind is kept (not inlined) but the if is eliminated
     # since i < 12 is always true for i in 0..10.
     # Body is SeqStmt(Bind(n_val, 10), For(i, ...))
-    stmts = body if isinstance(body, tvm.tirx.SeqStmt) else [body]
+    stmts = body if isinstance(body, tvm.ir.SeqStmt) else [body]
     # Find the For loop in the sequence
-    for_stmt = [s for s in stmts if isinstance(s, tvm.tirx.For)]
+    for_stmt = [s for s in stmts if isinstance(s, tvm.ir.For)]
     assert len(for_stmt) == 1, f"Expected one For loop, got {len(for_stmt)}"
-    assert isinstance(for_stmt[0].body, tvm.tirx.BufferStore)
+    assert isinstance(for_stmt[0].body[0], tvm.ir.TensorStore)
 
 
 def test_thread_extent_simplify():
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def func(A: T.handle("float32"), C: T.handle("float32"), n: T.int32):
-        A_ptr = T.decl_buffer((10,), "float32", data=A)
-        C_ptr = T.decl_buffer((10,), "float32", data=C)
+        A_ptr = T.decl_tensor(A, ty_args=[T.Tensor((10,), "float32", data=A)])
+        C_ptr = T.decl_tensor(C, ty_args=[T.Tensor((10,), "float32", data=C)])
         n_val: T.let[T.int32] = 10
-        for tx in T.thread_binding(n_val, thread="threadIdx.x"):
-            for ty in T.thread_binding(1, thread="threadIdx.y"):
+        with T.launch_thread("threadIdx.x", n_val) as tx:
+            with T.launch_thread("threadIdx.y", 1) as ty:
                 if tx + ty < 12:
                     A_ptr[tx] = C_ptr[tx + ty]
 
     mod = tvm.IRModule.from_expr(func)
     body = tvm.tirx.transform.StmtSimplify()(mod)["main"].body
-    # Navigate through DeclBuffer nodes to reach the inner body
-    while isinstance(body, tvm.tirx.DeclBuffer):
-        body = body.body
     # After simplification: Bind is kept but the if is eliminated
     # since tx + ty < 12 is always true for tx in 0..10 and ty = 0.
-    stmts = list(body) if isinstance(body, tvm.tirx.SeqStmt) else [body]
-    for_stmts = [s for s in stmts if isinstance(s, tvm.tirx.For)]
-    assert len(for_stmts) >= 1, f"Expected For loop, got stmts: {[type(s).__name__ for s in stmts]}"
-    # The outermost For is the tx loop
-    tx_loop = for_stmts[0]
-    assert isinstance(tx_loop, tvm.tirx.For)  # tx loop
-    assert isinstance(tx_loop.body, tvm.tirx.For)  # ty loop
-    assert isinstance(tx_loop.body.body, tvm.tirx.BufferStore)  # The if was eliminated
+    stmts = list(body) if isinstance(body, tvm.ir.SeqStmt) else [body]
+    launches = [s for s in stmts if isinstance(s, tvm.ir.RegionStmt)]
+    assert len(launches) == 1
+    tx_launch = launches[0]
+    assert tx_launch.op.name == "tirx.launch_thread"
+    assert tx_launch.body[0].op.name == "tirx.launch_thread"
+    assert isinstance(tx_launch.body[0].body[0], tvm.ir.TensorStore)  # The if was eliminated
 
 
 def test_if_likely():
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def func(A: T.handle("float32"), C: T.handle("float32"), n: T.int32):
-        A_ptr = T.decl_buffer((32,), "float32", data=A)
-        C_ptr = T.decl_buffer((1024,), "float32", data=C)
-        for tx in T.thread_binding(32, thread="threadIdx.x"):
-            for ty in T.thread_binding(32, thread="threadIdx.y"):
+        A_ptr = T.decl_tensor(A, ty_args=[T.Tensor((32,), "float32", data=A)])
+        C_ptr = T.decl_tensor(C, ty_args=[T.Tensor((1024,), "float32", data=C)])
+        with T.launch_thread("threadIdx.x", 32) as tx:
+            with T.launch_thread("threadIdx.y", 32) as ty:
                 if T.likely(tx * 32 + ty < n):
                     if T.likely(tx * 32 + ty < n):
                         A_ptr[tx] = C_ptr[tx * 32 + ty]
 
     mod = tvm.IRModule.from_expr(func)
     body = tvm.tirx.transform.StmtSimplify()(mod)["main"].body
-    # With flat semantics, skip DeclBuffer/AllocBuffer siblings to find the For
-    if isinstance(body, tvm.tirx.SeqStmt):
-        for_stmts = [s for s in body.seq if isinstance(s, tvm.tirx.For)]
-        body = for_stmts[0] if for_stmts else body
-    # Structure: For(tx) -> For(ty) -> IfThenElse
-    assert isinstance(body.body.body, tvm.tirx.IfThenElse)
-    assert not isinstance(body.body.body.then_case, tvm.tirx.IfThenElse)
+    # With flat semantics, skip DeclTensor/AllocTensor siblings to find the launch.
+    if isinstance(body, tvm.ir.SeqStmt):
+        launches = [s for s in body.seq if isinstance(s, tvm.ir.RegionStmt)]
+        body = launches[0] if launches else body
+    # Structure: launch_thread(tx) -> launch_thread(ty) -> If
+    assert isinstance(body.body[0].body[0], tvm.ir.If)
+    assert not isinstance(body.body[0].body[0].then_case[0], tvm.ir.If)
 
 
 def test_loop_body_knows_dynamic_extent_is_positive():
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((1,), "float32"), m: T.int32, n: T.int32):
+    @T.function(private=True)
+    def before(A: T.Tensor((1,), "float32"), m: T.int32, n: T.int32):
         for i in T.serial(m, n // 4):
             if n // 4 - m > 0:
                 A[0] = 1.0
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((1,), "float32"), m: T.int32, n: T.int32):
+    @T.function(private=True)
+    def expected(A: T.Tensor((1,), "float32"), m: T.int32, n: T.int32):
         for i in T.serial(m, n // 4):
             A[0] = 1.0
 
@@ -114,35 +107,21 @@ def test_loop_body_knows_dynamic_extent_is_positive():
     tvm.ir.assert_structural_equal(after, expected)
 
 
-def _apply_simplify(
-    func,
-    transitively_prove_inequalities=False,
-    convert_boolean_to_and_of_ors=False,
-    apply_constraints_to_boolean_branches=False,
-):
-    """Helper to apply simplify transform with config options."""
-    config = {
-        "tirx.StmtSimplify": {
-            "transitively_prove_inequalities": transitively_prove_inequalities,
-            "convert_boolean_to_and_of_ors": convert_boolean_to_and_of_ors,
-            "apply_constraints_to_boolean_branches": apply_constraints_to_boolean_branches,
-        }
-    }
+def _apply_simplify(func):
+    """Helper to apply the default statement simplification."""
     mod = tvm.IRModule.from_expr(func)
-    with tvm.transform.PassContext(config=config):
-        mod = tvm.tirx.transform.StmtSimplify()(mod)
-    return mod["main"]
+    return tvm.tirx.transform.StmtSimplify()(mod)["main"]
 
 
 def test_load_store_noop():
     """Store of a value that was just read from the same location is a no-op."""
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((1,), "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor((1,), "float32")):
         A[0] = A[0]
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((1,), "float32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor((1,), "float32")):
         T.evaluate(0)
 
     after = _apply_simplify(before)
@@ -152,18 +131,18 @@ def test_load_store_noop():
 def test_load_store_noop_after_simplify():
     """As test_load_store_noop, but requiring simplification to identify.
 
-    Previously, a bug caused the self-assignment of a buffer to
+    Previously, a bug caused the self-assignment of a tensor to
     checked based on the pre-simplification assignment, not the
     post-simplification.  This test is to identify any similar
     regression.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((1,), "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor((1,), "float32")):
         A[0] = A[0] + (5.0 - 5.0)
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((1,), "float32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor((1,), "float32")):
         T.evaluate(0)
 
     after = _apply_simplify(before)
@@ -171,22 +150,22 @@ def test_load_store_noop_after_simplify():
 
 
 def test_nested_condition():
-    """Nested IfThenElse with the same condition can be simplified.
+    """Nested If with the same condition can be simplified.
 
     Requires const_int_bound to narrow scope of i within the
     conditional, or for rewrite_simplify to recognize the literal
     constraint.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((16,), "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor((16,), "float32")):
         for i in T.serial(16):
             if i == 5:
                 if i == 5:
                     A[i] = 0.0
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((16,), "float32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor((16,), "float32")):
         for i in T.serial(16):
             if i == 5:
                 A[i] = 0.0
@@ -202,15 +181,15 @@ def test_nested_provable_condition():
     conditional.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((16,), "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor((16,), "float32")):
         for i in T.serial(16):
             if i == 5:
                 if i < 7:
                     A[i] = 0.0
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((16,), "float32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor((16,), "float32")):
         for i in T.serial(16):
             if i == 5:
                 A[i] = 0.0
@@ -226,15 +205,15 @@ def test_nested_var_condition():
     constraint.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((16,), "float32"), n: T.int32):
+    @T.function(private=True)
+    def before(A: T.Tensor((16,), "float32"), n: T.int32):
         for i in T.serial(16):
             if i == n:
                 if i == n:
                     A[i] = 0.0
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((16,), "float32"), n: T.int32):
+    @T.function(private=True)
+    def expected(A: T.Tensor((16,), "float32"), n: T.int32):
         for i in T.serial(16):
             if i == n:
                 A[i] = 0.0
@@ -243,17 +222,17 @@ def test_nested_var_condition():
     tvm.ir.assert_structural_equal(after, expected)
 
 
-def test_altered_buffer_contents():
+def test_altered_tensor_contents():
     """No simplification of data-dependent conditionals.
 
     A literal constraint must not be propagated if the values
     referenced may change.  TIR requires single assignment of
-    variables, so Var objects may be assumed constant, but BufferLoad
+    variables, so Var objects may be assumed constant, but TensorLoad
     may not.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((1,), "int32"), n: T.int32):
+    @T.function(private=True)
+    def before(A: T.Tensor((1,), "int32"), n: T.int32):
         if A[0] == n:
             A[0] = A[0] + 1
             if A[0] == n:
@@ -272,8 +251,8 @@ def test_negation_of_condition():
     condition is known to be false.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((16,), "int32")):
+    @T.function(private=True)
+    def before(A: T.Tensor((16,), "int32")):
         for i in T.serial(16):
             if i == 5:
                 if i != 5:
@@ -281,8 +260,8 @@ def test_negation_of_condition():
                 else:
                     A[i] = 1
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((16,), "int32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor((16,), "int32")):
         for i in T.serial(16):
             if i == 5:
                 A[i] = 1
@@ -300,8 +279,8 @@ def test_negation_of_not_equal():
     ``i==5`` as the negation of a literal constraint.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((16,), "int32")):
+    @T.function(private=True)
+    def before(A: T.Tensor((16,), "int32")):
         for i in T.serial(16):
             if i != 5:
                 if i == 5:
@@ -309,8 +288,8 @@ def test_negation_of_not_equal():
                 else:
                     A[i] = 1
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((16,), "int32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor((16,), "int32")):
         for i in T.serial(16):
             if i != 5:
                 A[i] = 1
@@ -326,8 +305,8 @@ def test_negation_of_var_condition():
     must rely on RewriteSimplifier recognizing the repeated literal.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((16,), "int32"), n: T.int32):
+    @T.function(private=True)
+    def before(A: T.Tensor((16,), "int32"), n: T.int32):
         for i in T.serial(16):
             if i == n:
                 if i != n:
@@ -335,8 +314,8 @@ def test_negation_of_var_condition():
                 else:
                     A[i] = 1
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((16,), "int32"), n: T.int32):
+    @T.function(private=True)
+    def expected(A: T.Tensor((16,), "int32"), n: T.int32):
         for i in T.serial(16):
             if i == n:
                 A[i] = 1
@@ -354,15 +333,15 @@ def test_literal_constraint_split_boolean_and():
     the condition is to ensure we exercise RewriteSimplifier.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((16, 16), "int32"), n: T.int32):
+    @T.function(private=True)
+    def before(A: T.Tensor((16, 16), "int32"), n: T.int32):
         for i, j in T.grid(16, 16):
             if i == n and j == n:
                 if i == n:
                     A[i, j] = 0
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((16, 16), "int32"), n: T.int32):
+    @T.function(private=True)
+    def expected(A: T.Tensor((16, 16), "int32"), n: T.int32):
         for i, j in T.grid(16, 16):
             if i == n and j == n:
                 A[i, j] = 0
@@ -382,8 +361,8 @@ def test_literal_constraint_split_boolean_or():
     RewriteSimplifier.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer((16, 16), "int32"), n: T.int32):
+    @T.function(private=True)
+    def before(A: T.Tensor((16, 16), "int32"), n: T.int32):
         for i, j in T.grid(16, 16):
             if i == n or j == n:
                 A[i, j] = 0
@@ -393,8 +372,8 @@ def test_literal_constraint_split_boolean_or():
                 else:
                     A[i, j] = 2
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer((16, 16), "int32"), n: T.int32):
+    @T.function(private=True)
+    def expected(A: T.Tensor((16, 16), "int32"), n: T.int32):
         for i, j in T.grid(16, 16):
             if i == n or j == n:
                 A[i, j] = 0
@@ -417,15 +396,15 @@ def test_prove_condition_using_let():
     expressions.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(4, "bool")):
+    @T.function(private=True)
+    def before(A: T.Tensor(4, "bool")):
         for i in T.serial(4):
             condition: T.let[T.bool] = i < 3
             if condition or i >= 3:
                 A[i] = condition
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(4, "bool")):
+    @T.function(private=True)
+    def expected(A: T.Tensor(4, "bool")):
         for i in T.serial(4):
             condition: T.let[T.bool] = i < 3  # noqa: F841
             A[i] = i < 3
@@ -441,16 +420,16 @@ def test_prove_let_condition():
     substitutes the variable in later expressions.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(4, "bool")):
+    @T.function(private=True)
+    def before(A: T.Tensor(4, "bool")):
         for i in T.serial(4):
             condition: T.let[T.bool] = i < 3
             if i < 3:
                 if condition:
                     A[i] = condition
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(4, "bool")):
+    @T.function(private=True)
+    def expected(A: T.Tensor(4, "bool")):
         for i in T.serial(4):
             condition: T.let[T.bool] = i < 3  # noqa: F841
             if i < 3:
@@ -468,16 +447,16 @@ def test_prove_repeated_let_condition():
     the inner `if condition` simplifies to True and is eliminated.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(4, "bool")):
+    @T.function(private=True)
+    def before(A: T.Tensor(4, "bool")):
         for i in T.serial(4):
             condition: T.let[T.bool] = i < 3
             if condition:
                 if condition:
                     A[i] = condition
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(4, "bool")):
+    @T.function(private=True)
+    def expected(A: T.Tensor(4, "bool")):
         for i in T.serial(4):
             condition: T.let[T.bool] = i < 3  # noqa: F841
             if i < 3:
@@ -488,14 +467,14 @@ def test_prove_repeated_let_condition():
 
 
 def test_if_then_else_expr():
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
             if i < 12:
-                A[i] = T.if_then_else(i < 12, 1.0, 2.0, dtype="float32")
+                A[i] = T.if_then_else(i < 12, 1.0, 2.0)
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
             if i < 12:
                 A[i] = 1.0
@@ -507,14 +486,12 @@ def test_if_then_else_expr():
 def test_ceil_log2_int():
     """Simplify expressions resulting from topi.math.ceil_log2"""
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "int32")):
-        A[0] = T.cast(
-            T.ceil(T.log2(T.cast(14, "float64"), dtype="float64"), dtype="float64"), dtype="int32"
-        )
+    @T.function(private=True)
+    def before(A: T.Tensor(1, "int32")):
+        A[0] = T.cast(T.ceil(T.log2(T.cast(14, "float64"))), dtype="int32")
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "int32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor(1, "int32")):
         A[0] = 4
 
     after = _apply_simplify(before)
@@ -528,18 +505,18 @@ def test_left_ceil_log2_lower_bound():
     after simplification. The if condition is still eliminated.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
             x: T.let[T.int32] = T.cast(
-                T.ceil(T.log2(T.cast(i + 1024 + 1, "float64"), dtype="float64"), dtype="float64"),
+                T.ceil(T.log2(T.cast(i + 1024 + 1, "float64"))),
                 dtype="int32",
             )
             if x == 11:
                 A[i] = 0.0
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
             x: T.let[T.int32] = T.Cast(  # noqa: F841
                 "int32",
@@ -559,14 +536,14 @@ def test_left_shift_lower_bound():
                 = 1
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
-            if T.shift_left(1, i, dtype="int32") >= 1:
+            if T.shift_left(1, i) >= 1:
                 A[i] = 0.0
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
             A[i] = 0.0
 
@@ -582,14 +559,14 @@ def test_left_shift_upper_bound():
                  = 1015808
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
-            if T.shift_left(31, i, dtype="int32") <= 1015808:
+            if T.shift_left(31, i) <= 1015808:
                 A[i] = 0.0
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def expected(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
             A[i] = 0.0
 
@@ -605,10 +582,10 @@ def test_left_shift_of_negative_value():
     with undefined behavior.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
-            if -64 <= T.shift_left(-i, 4, dtype="int32"):
+            if -64 <= T.shift_left(-i, 4):
                 A[i] = 0.0
 
     expected = before
@@ -625,10 +602,10 @@ def test_left_shift_by_negative_value():
     with undefined behavior.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(16, "float32")):
+    @T.function(private=True)
+    def before(A: T.Tensor(16, "float32")):
         for i in T.serial(16):
-            if T.shift_left(16, -i, dtype="int32") <= 16:
+            if T.shift_left(16, -i) <= 16:
                 A[i] = 0.0
 
     expected = before
@@ -637,269 +614,28 @@ def test_left_shift_by_negative_value():
     tvm.ir.assert_structural_equal(after, expected)
 
 
-def test_remove_transitively_provable_condition():
-    """Remove comparisons that may be proven using multiple others
-
-    For example, the `0 < i` and `i <= j` conditions can be used to prove
-    that `0 < j`.
-    """
-    i, j, k = [tvm.tirx.Var(name, "int32") for name in "ijk"]
-    zero = tvm.tirx.IntImm("int32", 0)
-
-    test_cases = [
-        (tvm.tirx.all(zero < i, i <= j), zero < j, True),
-        # Transitive comparisons from LT
-        (tvm.tirx.all(i < j, j < k), i < k, True),
-        (tvm.tirx.all(i < j, j == k), i < k, True),
-        (tvm.tirx.all(i < j, j <= k), i < k, True),
-        (tvm.tirx.all(i < j, j > k), i < k, False),
-        (tvm.tirx.all(i < j, j >= k), i < k, False),
-        (tvm.tirx.all(i < j, j != k), i < k, False),
-        # Transitive comparisons from LE
-        (tvm.tirx.all(i <= j, j < k), i < k, True),
-        (tvm.tirx.all(i <= j, j == k), i == k, False),
-        (tvm.tirx.all(i <= j, j == k), i <= k, True),
-        (tvm.tirx.all(i <= j, j <= k), i <= k, True),
-        (tvm.tirx.all(i <= j, j <= k), i < k, False),
-        (tvm.tirx.all(i <= j, j > k), i < k, False),
-        (tvm.tirx.all(i <= j, j >= k), i < k, False),
-        (tvm.tirx.all(i <= j, j != k), i < k, False),
-        # Transitive comparisons from GT
-        (tvm.tirx.all(i > j, j > k), i > k, True),
-        (tvm.tirx.all(i > j, j == k), i > k, True),
-        (tvm.tirx.all(i > j, j >= k), i > k, True),
-        (tvm.tirx.all(i > j, j < k), i > k, False),
-        (tvm.tirx.all(i > j, j <= k), i > k, False),
-        (tvm.tirx.all(i > j, j != k), i > k, False),
-        # Transitive comparisons from GE
-        (tvm.tirx.all(i >= j, j > k), i > k, True),
-        (tvm.tirx.all(i >= j, j == k), i == k, False),
-        (tvm.tirx.all(i >= j, j == k), i >= k, True),
-        (tvm.tirx.all(i >= j, j >= k), i >= k, True),
-        (tvm.tirx.all(i >= j, j >= k), i > k, False),
-        (tvm.tirx.all(i >= j, j < k), i > k, False),
-        (tvm.tirx.all(i >= j, j <= k), i > k, False),
-        (tvm.tirx.all(i >= j, j != k), i > k, False),
-        # GT or LT may be used to prove NE
-        (tvm.tirx.all(i == j, j != k), i != k, True),
-        (tvm.tirx.all(i == j, j < k), i != k, True),
-        (tvm.tirx.all(i == j, j > k), i != k, True),
-        (tvm.tirx.all(i == j, j != k), i < k, False),
-        (tvm.tirx.all(i == j, j != k), i > k, False),
-        # Because these are integers, x<y is equivalent to x <= y-1,
-        # and may be used in equivalent simplifications.
-        (tvm.tirx.all(i <= j - 1, j < k), i < k, True),
-        (tvm.tirx.all(i <= j - 1, j == k), i < k, True),
-        (tvm.tirx.all(i <= j - 1, j <= k), i < k, True),
-        (tvm.tirx.all(i <= j - 1, j > k), i < k, False),
-        (tvm.tirx.all(i <= j - 1, j >= k), i < k, False),
-        (tvm.tirx.all(i <= j - 1, j != k), i < k, False),
-        # Either or both inequalities may have an additive offset.
-        (tvm.tirx.all(i <= j + 5, j <= k + 7), i <= k + 12, True),
-        (tvm.tirx.all(i <= j + 5, j <= k + 7), i <= k + 11, False),
-        # For floats, x < y + c1 and y < z + c2 implies that x < z + (c1 + c2).
-        # Because this simplification applies to integers, transitive
-        # application of LT or GT can give a tighter constraint.
-        #
-        # i < j + c1, j < k + c2
-        # i <= j + c1 - 1, j <= k + c2 - 1
-        # i + 1 - c1 <= j, j <= k + c2 - 1
-        # i + 1 - c1 <= k + c2 - 1
-        # i <= k + c1 + c2 - 2
-        # i < k + (c1 + c2 - 1)
-        #
-        (tvm.tirx.all(i < j + 5, j < k + 7), i < k + 11, True),
-        (tvm.tirx.all(i < j + 5, j < k + 7), i < k + 10, False),
-    ]
-
-    analyzer = tvm.sym.Analyzer()
-
-    for priors, postulate, provable in test_cases:
-        # well formed checker complains of undefined variables in condition
-        @T.prim_func(private=True, check_well_formed=False)
-        def before_func(A: T.Buffer(1, "bool")):
-            if priors:
-                A[0] = postulate
-
-        priors_simplified = analyzer.canonical_simplify(priors)
-
-        if provable:
-            # well formed checker complains of undefined variables in condition
-            @T.prim_func(private=True, check_well_formed=False)
-            def expected_func(A: T.Buffer(1, "bool")):
-                if priors_simplified:
-                    A[0] = True
-
-        else:
-            postulate_simplified = analyzer.canonical_simplify(postulate)
-
-            # well formed checker complains of undefined variables in condition
-            @T.prim_func(private=True, check_well_formed=False)
-            def expected_func(A: T.Buffer(1, "bool")):
-                if priors_simplified:
-                    A[0] = postulate_simplified
-
-        after = _apply_simplify(before_func, transitively_prove_inequalities=True)
-        tvm.ir.assert_structural_equal(after, expected_func)
-
-
 def test_suppress_transitively_provable_condition():
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
+    @T.function(private=True)
+    def before(A: T.Tensor(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
         if i < j and j < k:
             A[0] = i < k
 
     expected = before
 
-    after = _apply_simplify(before, transitively_prove_inequalities=False)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_rewrite_as_and_of_ors():
-    """If enabled, rewrite boolean expressions into AND of OR"""
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(3, "bool")):
-        T.evaluate(A[0] or (A[1] and A[2]))
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(3, "bool")):
-        T.evaluate((A[0] or A[1]) and (A[0] or A[2]))
-
-    after = _apply_simplify(before, convert_boolean_to_and_of_ors=True)
+    after = _apply_simplify(before)
     tvm.ir.assert_structural_equal(after, expected)
 
 
 def test_suppress_rewrite_as_and_of_ors():
     """Only rewrite into AND of OR when allowed"""
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(3, "bool")):
+    @T.function(private=True)
+    def before(A: T.Tensor(3, "bool")):
         T.evaluate(A[0] or (A[1] and A[2]))
 
     expected = before
 
-    after = _apply_simplify(before, convert_boolean_to_and_of_ors=False)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_rewrite_as_and_of_ors_with_top_level_and():
-    """The expression being rewritten may start with an AND
-
-    Like test_rewrite_as_and_of_ors, but with an AndNode as the outermost
-    booelan operator.  Even though it is primarily OR nodes that are
-    being rewritten, the call to SimplifyAsAndOfOrs should apply to
-    the outermost AndNode or OrNode in order to enable better
-    simplification.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(4, "bool")):
-        T.evaluate((A[0] or A[1]) and (A[1] or (A[0] and A[2] and A[3])))
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(4, "bool")):
-        # If the simplification is applied to the OrNode, then a
-        # redundant `(A[1] or A[0])` would't be canceled out.  When
-        # applying SimplifyAsAndOfOrs to the top-level AndNode, the
-        # internal representation is `[[0,1], [1,0], [1,2], [1,3]]`, and
-        # the redundant `[1,0]` can be removed.
-        #
-        # If the simplification were only applied when encountering an
-        # OrNode, the internal representation would be `[[0,1]]` during
-        # the first call and `[[1,0], [1,2], [1,3]]` during the second
-        # call.  As a result, the `[0,1]` and `[1,0]` representations
-        # wouldn't occur within the same call, and the redundant `[1,0]`
-        # wouldn't be removed.
-        T.evaluate((A[0] or A[1]) and (A[1] or A[2]) and (A[1] or A[3]))
-
-    after = _apply_simplify(before, convert_boolean_to_and_of_ors=True)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_rewrite_as_and_of_ors_with_simplification_between_groups():
-    """Apply rewrite rules between OR groups that differ by a single element
-
-    The expression `(k==20 and k!=30)` could be rewritten into `(k==20)`.
-    However, by default these two terms must appear as part of an explicit part
-    of the simplified expression.  The AndOfOr simplification checks for
-    rewrite patterns of the form `(A or B) and (A or C)`, where `(B and C)` can
-    simplify to a single expression `D`.  These can be rewritten to `(A or D)`.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
-        A[0] = (i == 0 or j == 10 or k == 20) and (i == 0 or j == 10 or k != 30)
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
-        A[0] = i == 0 or j == 10 or k == 20
-
-    after = _apply_simplify(before, convert_boolean_to_and_of_ors=True)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_rewrite_as_and_of_ors_with_simplification_between_reordered_groups():
-    """Rewrite rules between OR groups do not depend on order
-
-    Like test_rewrite_as_and_of_ors_with_simplification_between_groups, but the groups
-    are ordered differently.  If this removes a group entirely, the result is
-    ordered according to the first group in the expression.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
-        A[0] = (i == 0 or j == 10 or k == 20) and (j == 10 or k != 30 or i == 0)
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
-        A[0] = j == 10 or k == 20 or i == 0
-
-    after = _apply_simplify(before, convert_boolean_to_and_of_ors=True)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_rewrite_as_and_of_or_using_simplification_across_and():
-    """Apply AndNode rewrites to non-adjacent expressions
-
-    The RewriteSimplifier rules only check for simplifications between
-    left/right branches of an And/Or node.  Simplifications that would require
-    rearranging components in a chain of And/Or nodes are not performed.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
-        A[0] = (k == 20) and ((i == 0 or j == 10) and (k != 30))
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
-        A[0] = (i == 0 or j == 10) and (k == 20)
-
-    after = _apply_simplify(before, convert_boolean_to_and_of_ors=True)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_rewrite_as_and_of_or_using_simplification_within_or():
-    """Rewrite rules between OR groups do not depend on order
-
-    The RewriteSimplifier rules only check for simplifications between
-    left/right branches of an And/Or node.  Simplifications that would require
-    rearranging components in a chain of And/Or nodes are not performed.
-
-    This test validates that `(i == 20) or (i != 30)` can be rewritten to
-    `(i != 30)`, even when there's an intervening clause between the
-    clauses being simplified.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
-        A[0] = (i == 20) or (j == 0) or (i != 30)
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32, k: T.int32):
-        A[0] = (j == 0) or (i != 30)
-
-    after = _apply_simplify(before, convert_boolean_to_and_of_ors=True)
+    after = _apply_simplify(before)
     tvm.ir.assert_structural_equal(after, expected)
 
 
@@ -923,13 +659,13 @@ def test_conditional_floor_mod():
     `canonical_simplify`.
     """
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), i: T.int32):
+    @T.function(private=True)
+    def before(A: T.Tensor(1, "bool"), i: T.int32):
         if T.floormod(0 - i, 2) == 0:
             A[0] = T.floormod(i, 2) == 0
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), i: T.int32):
+    @T.function(private=True)
+    def expected(A: T.Tensor(1, "bool"), i: T.int32):
         if T.floormod(i, -2) == 0:
             A[0] = True
 
@@ -937,190 +673,20 @@ def test_conditional_floor_mod():
     tvm.ir.assert_structural_equal(after, expected)
 
 
-def test_simplify_rhs_of_boolean_and_using_lhs():
-    """Boolean expressions can introduce contexts.
-
-    In `A and B`, the result of `B` only matters when `A` is
-    true, and can be simplified under that context.  This test
-    simplifies `n < 10` under the assumption that `n < 5`.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), n: T.int32):
-        A[0] = n < 5 and n < 10
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), n: T.int32):
-        A[0] = n < 5
-
-    after = _apply_simplify(before, apply_constraints_to_boolean_branches=True)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_simplify_lhs_of_boolean_and_using_rhs():
-    """Boolean expressions can introduce contexts for their arguments.
-
-    Like test_simplify_rhs_of_boolean_and_using_lhs, but using the RHS to
-    simplify the LHS.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), n: T.int32):
-        A[0] = n < 10 and n < 5
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), n: T.int32):
-        A[0] = n < 5
-
-    after = _apply_simplify(before, apply_constraints_to_boolean_branches=True)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_simplify_rhs_of_boolean_or_using_lhs():
-    """Boolean expressions can introduce contexts.
-
-    In `A or B`, the result of `B` only matters when `A` is false, so
-    `B` can be simplified under the assumption that `A` is false.
-    This test simplifies `n < 5` under the assumption that `!(n < 10)`
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), n: T.int32):
-        A[0] = n < 10 or n < 5
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), n: T.int32):
-        A[0] = n < 10
-
-    after = _apply_simplify(before, apply_constraints_to_boolean_branches=True)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_simplify_lhs_of_boolean_or_using_rhs():
-    """Boolean expressions can introduce contexts for their arguments.
-
-    Like test_simplify_rhs_of_boolean_or_using_lhs, but using the RHS to
-    simplify the LHS.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), n: T.int32):
-        A[0] = n < 5 or n < 10
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), n: T.int32):
-        A[0] = n < 10
-
-    after = _apply_simplify(before, apply_constraints_to_boolean_branches=True)
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_simplify_rhs_of_boolean_and_using_lhs_without_const():
-    """Boolean expressions can introduce contexts.
-
-    Like test_simplify_rhs_of_boolean_and_using_lhs, but with variables in
-    the conditions, preventing ConstIntBoundAnalyzer from handling it.
-    This proof requires the extension to transitively prove
-    inequalities.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), n: T.int32, m: T.int32):
-        A[0] = n < m + 5 and n < m + 10
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), n: T.int32, m: T.int32):
-        A[0] = n < m + 5
-
-    after = _apply_simplify(
-        before, apply_constraints_to_boolean_branches=True, transitively_prove_inequalities=True
-    )
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_simplify_lhs_of_boolean_and_using_rhs_without_const():
-    """Boolean expressions can introduce contexts for their arguments.
-
-    Like test_simplify_lhs_of_boolean_and_using_rhs, but with variables in
-    the conditions, preventing ConstIntBoundAnalyzer from handling it.
-    This proof requires the extension to transitively prove
-    inequalities.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), n: T.int32, m: T.int32):
-        A[0] = n < m + 10 and n < m + 5
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), n: T.int32, m: T.int32):
-        A[0] = n < m + 5
-
-    after = _apply_simplify(
-        before, apply_constraints_to_boolean_branches=True, transitively_prove_inequalities=True
-    )
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_simplify_rhs_of_boolean_or_using_lhs_without_const():
-    """Boolean expressions can introduce contexts.
-
-    Like test_simplify_rhs_of_boolean_or_using_lhs, but with variables in the
-    conditions, preventing ConstIntBoundAnalyzer from handling it.
-    This proof requires the extension to transitively prove
-    inequalities.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), n: T.int32, m: T.int32):
-        A[0] = n < m + 10 or n < m + 5
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), n: T.int32, m: T.int32):
-        A[0] = n < m + 10
-
-    after = _apply_simplify(
-        before, apply_constraints_to_boolean_branches=True, transitively_prove_inequalities=True
-    )
-    tvm.ir.assert_structural_equal(after, expected)
-
-
-def test_simplify_lhs_of_boolean_or_using_rhs_without_const():
-    """Boolean expressions can introduce contexts for their arguments.
-
-    Like test_simplify_lhs_of_boolean_or_using_rhs, but with variables in the
-    conditions, preventing ConstIntBoundAnalyzer from handling it.
-    This proof requires the extension to transitively prove
-    inequalities.
-    """
-
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), n: T.int32, m: T.int32):
-        A[0] = n < m + 5 or n < m + 10
-
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), n: T.int32, m: T.int32):
-        A[0] = n < m + 10
-
-    after = _apply_simplify(
-        before, apply_constraints_to_boolean_branches=True, transitively_prove_inequalities=True
-    )
-    tvm.ir.assert_structural_equal(after, expected)
-
-
 def test_provable_condition_with_offset():
     """Use scoped-constraint to prove inequalities"""
 
-    @T.prim_func(private=True)
-    def before(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32):
+    @T.function(private=True)
+    def before(A: T.Tensor(1, "bool"), i: T.int32, j: T.int32):
         if i < j:
             A[0] = i < j + 1
 
-    @T.prim_func(private=True)
-    def expected(A: T.Buffer(1, "bool"), i: T.int32, j: T.int32):
+    @T.function(private=True)
+    def expected(A: T.Tensor(1, "bool"), i: T.int32, j: T.int32):
         if i < j:
             A[0] = True
 
-    after = _apply_simplify(before, transitively_prove_inequalities=False)
+    after = _apply_simplify(before)
     tvm.ir.assert_structural_equal(after, expected)
 
 
@@ -1148,14 +714,14 @@ def test_most_restrictive_conditional():
 
     for priors, expr_before, expr_after in test_cases:
         # well formed checker complains of undefined variables in condition
-        @T.prim_func(private=True, check_well_formed=False)
-        def before_func(A: T.Buffer(1, "bool")):
+        @T.function(private=True, check_well_formed=False)
+        def before_func(A: T.Tensor(1, "bool")):
             if priors:
                 A[0] = expr_before
 
         # well formed checker complains of undefined variables in condition
-        @T.prim_func(private=True, check_well_formed=False)
-        def expected_func(A: T.Buffer(1, "bool")):
+        @T.function(private=True, check_well_formed=False)
+        def expected_func(A: T.Tensor(1, "bool")):
             if priors:
                 A[0] = expr_after
 
@@ -1163,13 +729,13 @@ def test_most_restrictive_conditional():
         tvm.ir.assert_structural_equal(after, expected_func)
 
 
-def test_simplify_trivial_let_buffer_var():
-    """A Bind used in a buffer definition should be retained"""
+def test_simplify_trivial_let_tensor_var():
+    """A Bind used in a tensor definition should be retained"""
 
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def before(A_ptr: T.handle("float32")):
         A_ptr_redef: T.let[T.handle("float32")] = A_ptr
-        A = T.decl_buffer(1, "float32", data=A_ptr_redef)
+        A = T.decl_tensor(A_ptr_redef, ty_args=[T.Tensor(1, "float32", data=A_ptr_redef)])
         A[0] = 42.0
 
     expected = before
@@ -1179,18 +745,22 @@ def test_simplify_trivial_let_buffer_var():
 
 
 def test_simplify_trivial_let_elem_offset():
-    """A Bind used in a buffer definition should be retained"""
+    """A Bind used in a tensor definition should be retained"""
 
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def before(A_ptr: T.handle("float32"), A_offset: T.int32):
         A_offset_redef = A_offset
-        A = T.decl_buffer(1, "float32", elem_offset=A_offset_redef, data=A_ptr)
+        A = T.decl_tensor(
+            A_ptr, ty_args=[T.Tensor(1, "float32", elem_offset=A_offset_redef, data=A_ptr)]
+        )
         A[0] = 42.0
 
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def expected(A_ptr: T.handle("float32"), A_offset: T.int32):
         A_offset_redef = A_offset
-        A = T.decl_buffer(1, "float32", elem_offset=A_offset_redef, data=A_ptr)
+        A = T.decl_tensor(
+            A_ptr, ty_args=[T.Tensor(1, "float32", elem_offset=A_offset_redef, data=A_ptr)]
+        )
         A[0] = 42.0
 
     after = _apply_simplify(before)
@@ -1198,18 +768,18 @@ def test_simplify_trivial_let_elem_offset():
 
 
 def test_simplify_trivial_let_shape():
-    """A Bind used in a buffer definition should be retained"""
+    """A Bind used in a tensor definition should be retained"""
 
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def before(A_ptr: T.handle("float32"), A_size: T.int32):
         A_size_redef = A_size
-        A = T.decl_buffer([A_size_redef], "float32", data=A_ptr)
+        A = T.decl_tensor(A_ptr, ty_args=[T.Tensor([A_size_redef], "float32", data=A_ptr)])
         A[0] = 42.0
 
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def expected(A_ptr: T.handle("float32"), A_size: T.int32):
         A_size_redef = A_size
-        A = T.decl_buffer([A_size_redef], "float32", data=A_ptr)
+        A = T.decl_tensor(A_ptr, ty_args=[T.Tensor([A_size_redef], "float32", data=A_ptr)])
         A[0] = 42.0
 
     after = _apply_simplify(before)
@@ -1217,81 +787,85 @@ def test_simplify_trivial_let_shape():
 
 
 def test_simplify_trivial_let_stride():
-    """A Bind used in a buffer definition should be retained"""
+    """A Bind used in a tensor definition should be retained"""
 
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def before(A_ptr: T.handle("float32"), A_stride: T.int32):
         A_stride_redef = A_stride
-        A = T.decl_buffer(1, "float32", strides=[A_stride_redef], data=A_ptr)
+        A = T.decl_tensor(
+            A_ptr, ty_args=[T.Tensor(1, "float32", strides=[A_stride_redef], data=A_ptr)]
+        )
         A[0] = 42.0
 
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def expected(A_ptr: T.handle("float32"), A_stride: T.int32):
         A_stride_redef = A_stride
-        A = T.decl_buffer(1, "float32", strides=[A_stride_redef], data=A_ptr)
+        A = T.decl_tensor(
+            A_ptr, ty_args=[T.Tensor(1, "float32", strides=[A_stride_redef], data=A_ptr)]
+        )
         A[0] = 42.0
 
     after = _apply_simplify(before)
     tvm.ir.assert_structural_equal(after, expected)
 
 
-def test_simplify_buffer_identity_well_formed():
-    """Regression: Simplify must not diverge buffer identity between DeclBuffer and BufferLoad.
+def test_simplify_tensor_identity_well_formed():
+    """Regression: Simplify must not diverge tensor identity between DeclTensor and TensorLoad.
 
     The simplifier's Dispatch calls analyzer_->Simplify() directly, bypassing
-    normal ExprMutator dispatch.  If VisitBufferDef remaps a buffer at a DeclBuffer
-    site (e.g. inlining n_val -> n in the shape), BufferLoad inside a BufferStore
-    value would NOT pick up the remap because VisitBufferUse is never called.
-    This causes DeclBuffer/BufferLoad buffer identity divergence.
+    normal ExprMutator dispatch.  If VisitTensorDef remaps a tensor at a DeclTensor
+    site (e.g. inlining n_val -> n in the shape), TensorLoad inside a TensorStore
+    value would NOT pick up the remap because VisitTensorUse is never called.
+    This causes DeclTensor/TensorLoad tensor identity divergence.
     """
 
-    @T.prim_func(private=True)
+    @T.function(private=True)
     def before(A_ptr: T.handle("float32"), B_ptr: T.handle("float32"), n: T.int32):
         n_val = n
-        A = T.decl_buffer([n_val], "float32", data=A_ptr)
-        B = T.decl_buffer([n_val], "float32", data=B_ptr)
+        A = T.decl_tensor(A_ptr, ty_args=[T.Tensor([n_val], "float32", data=A_ptr)])
+        B = T.decl_tensor(B_ptr, ty_args=[T.Tensor([n_val], "float32", data=B_ptr)])
         B[0] = A[0]
 
     after = _apply_simplify(before)
     tvm.tirx.analysis.verify_well_formed(after)
 
 
-def test_buffer_shape_constraint():
+def test_tensor_shape_constraint():
     n = T.dynamic("n")
 
     @I.ir_module(check_well_formed=False)
     class Before:
-        @T.prim_func
-        def main(A: T.Buffer((n * 32,), "float32")):
+        @T.function
+        def main(A: T.Tensor((n * 32,), "float32")):
             A[T.min(T.int64(0), n)] = T.float32(0)
 
     n = T.dynamic("n")
 
     @I.ir_module(check_well_formed=False)
     class Expected:
-        @T.prim_func
-        def main(A: T.Buffer((n * 32,), "float32")):
+        @T.function
+        def main(A: T.Tensor((n * 32,), "float32")):
             A[T.int64(0)] = T.float32(0)
 
     after = tvm.tirx.transform.StmtSimplify()(Before)
     tvm.ir.assert_structural_equal(after["main"], Expected["main"])
 
 
-def test_buffer_shape_constraint_with_offset():
+def test_tensor_shape_constraint_with_offset():
     n = T.dynamic("n")
 
     @I.ir_module(check_well_formed=False)
     class Before:
-        @T.prim_func
-        def main(A: T.Buffer((n * 32 + 1 - 2,), "float32")):
+        @T.function
+        def main(A: T.Tensor((n * 32 + 1 - 2,), "float32")):
             A[T.min(T.int64(1), n)] = T.float32(0)
 
     n = T.dynamic("n")
 
     @I.ir_module(check_well_formed=False)
     class Expected:
-        @T.prim_func
-        def main(A: T.Buffer((n * 32 + 1 - 2,), "float32")):
+        @T.function
+        def main(A: T.Tensor((n * 32 + 1 - 2,), "float32")):
             A[T.int64(1)] = T.float32(0)
 
     after = tvm.tirx.transform.StmtSimplify()(Before)
@@ -1299,15 +873,15 @@ def test_buffer_shape_constraint_with_offset():
 
 
 def test_nested_if_elimination():
-    @T.prim_func(private=True)
-    def before(a: T.Buffer((2, 8), "int32"), b: T.Buffer((2, 8), "int32")):
+    @T.function(private=True)
+    def before(a: T.Tensor((2, 8), "int32"), b: T.Tensor((2, 8), "int32")):
         for i0, j0 in T.grid(2, 8):
             b[i0, j0] = T.if_then_else(
                 i0 == 1 and 6 <= j0, 0, T.max(0, T.if_then_else(i0 == 1 and 6 <= j0, 0, a[i0, j0]))
             )
 
-    @T.prim_func(private=True)
-    def expected(a: T.Buffer((2, 8), "int32"), b: T.Buffer((2, 8), "int32")):
+    @T.function(private=True)
+    def expected(a: T.Tensor((2, 8), "int32"), b: T.Tensor((2, 8), "int32")):
         for i0, j0 in T.grid(2, 8):
             b[i0, j0] = T.if_then_else(i0 == 1 and 6 <= j0, 0, T.max(0, a[i0, j0]))
 
@@ -1322,26 +896,28 @@ def test_mutable_branch_predicate_preserves_while_bound(else_branch, write_befor
     # and a store on its back edge both invalidate the entry predicate.
     from tvm import tirx
 
-    x = tirx.decl_buffer((1,), "int32", name="x")
-    count = tirx.decl_buffer((1,), "int32", name="count")
-    loop = tirx.While(
+    x = tirx.decl_tensor((1,), "int32", name="x")
+    count = tirx.decl_tensor((1,), "int32", name="count")
+    loop = tvm.ir.While(
         T.And(x[0] < 8, count[0] == 0),
-        tirx.BufferStore(x, x[0] + 1, [0]),
+        tvm.ir.TensorStore(x, [0], x[0] + 1),
     )
-    body = tirx.SeqStmt([tirx.BufferStore(x, x[0] + 1, [0]), loop]) if write_before_loop else loop
+    body = (
+        tvm.ir.SeqStmt([tvm.ir.TensorStore(x, [0], x[0] + 1), loop]) if write_before_loop else loop
+    )
     branch = (
-        tirx.IfThenElse(T.int32(8) <= x[0], tirx.Evaluate(0), body)
+        tvm.ir.If(T.int32(8) <= x[0], tvm.ir.Evaluate(0), body)
         if else_branch
-        else tirx.IfThenElse(x[0] < 8, body, None)
+        else tvm.ir.If(x[0] < 8, body, None)
     )
-    func = tirx.PrimFunc([x, count], branch)
+    func = tirx.Function([x, count], branch)
     after = _apply_simplify(func)
     tvm.ir.assert_structural_equal(after, func)
 
 
 def test_mutable_branch_predicate_preserves_later_load():
-    @T.prim_func(private=True)
-    def before(x: T.Buffer((1,), "int32"), out: T.Buffer((1,), "int32")):
+    @T.function(private=True)
+    def before(x: T.Tensor((1,), "int32"), out: T.Tensor((1,), "int32")):
         if x[0] < 8:
             x[0] = x[0] + 1
             out[0] = T.Select(x[0] < 8, 1, 0)
@@ -1350,8 +926,8 @@ def test_mutable_branch_predicate_preserves_later_load():
 
 
 def test_mutable_assert_does_not_constrain_later_load():
-    @T.prim_func(private=True)
-    def before(x: T.Buffer((1,), "int32"), out: T.Buffer((1,), "int32")):
+    @T.function(private=True)
+    def before(x: T.Tensor((1,), "int32"), out: T.Tensor((1,), "int32")):
         assert x[0] < 8, "initial bound"
         x[0] = x[0] + 1
         out[0] = T.Select(x[0] < 8, 1, 0)

@@ -26,6 +26,8 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
+#include <tvm/relax/op_attr_types.h>
 
 #include <utility>
 
@@ -38,18 +40,28 @@ Expr no_grad(Expr input) {
   return Call(Type::Missing(), op, {std::move(input)}, {}, {});
 }
 
+void TakeBackwardAttrs::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TakeBackwardAttrs>().def_ro("axis", &TakeBackwardAttrs::axis,
+                                              "The axis over which values were selected.",
+                                              refl::DefaultValue(ffi::Optional<int64_t>{}));
+}
+
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("relax.op.grad.no_grad", no_grad);
 }
 
-Type InferTypeNoGrad(const Call& call, const BlockBuilder& ctx) { return GetType(call->args[0]); }
+Type InferTypeNoGrad(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
+  return GetType(call->args[0]);
+}
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.grad.no_grad")
-      .add_arg("x", "The corresponding input tensor.")
-      .set_attr<FInferType>("FInferType", InferTypeNoGrad)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("x", "The corresponding input tensor."))
+      .set_attr<FInferType>(tvm::op_attr::kInferType, FInferType::FromNative<&InferTypeNoGrad>())
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.grad.start_checkpoint */
@@ -73,9 +85,10 @@ Type InferTypeStartCheckpoint(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.grad.start_checkpoint")
-      .add_arg("x", "The tensor marking the input of the checkpoint stage.")
-      .set_attr<FInferType>("FInferType", InferTypeStartCheckpoint)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("x", "The tensor marking the input of the checkpoint stage."))
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder,
+                                       InferTypeStartCheckpoint)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.grad.end_checkpoint */
@@ -99,9 +112,10 @@ Type InferTypeEndCheckpoint(const Call& call, const BlockBuilder& ctx) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.grad.end_checkpoint")
-      .add_arg("x", "The output of the checkpoint stage.")
-      .set_attr<FInferType>("FInferType", InferTypeEndCheckpoint)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("x", "The output of the checkpoint stage."))
+      .set_attr<FInferTypeWithBuilder>(tvm::relax::op_attr::kInferTypeWithBuilder,
+                                       InferTypeEndCheckpoint)
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.grad.nll_loss_backward */
@@ -130,19 +144,20 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.grad.nll_loss_backward", nll_loss_backward);
 }
 
-Type InferTypeNLLLossBackward(const Call& call, const BlockBuilder& ctx) {
+Type InferTypeNLLLossBackward(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
   return GetType(call->args[1]);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.grad.nll_loss_backward", "Optional weights: The weight of each target values.")
-      .add_arg("output_grad", "The output gradient.")
-      .add_arg("predictions", "The prediction tensor.")
-      .add_arg("targets", "The target tensor.")
-      .allow_extra_args()
-      .attrs_type<NLLLossAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeNLLLossBackward)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("output_grad", "The output gradient."),
+                 sig::arg("predictions", "The prediction tensor."),
+                 sig::arg("targets", "The target tensor."), sig::var_args("args"),
+                 sig::call_attrs<NLLLossAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType,
+                            FInferType::FromNative<&InferTypeNLLLossBackward>())
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.grad.max_pool2d_backward */
@@ -168,17 +183,18 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.grad.max_pool2d_backward", max_pool2d_backward);
 }
 
-Type InferTypeMaxPool2DBackward(const Call& call, const BlockBuilder& ctx) {
+Type InferTypeMaxPool2DBackward(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
   return GetType(call->args[1]);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.grad.max_pool2d_backward")
-      .add_arg("output_grad", "The output gradient.")
-      .add_arg("data", "The input tensor")
-      .attrs_type<Pool2DAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeMaxPool2DBackward)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("output_grad", "The output gradient."),
+                 sig::arg("data", "The input tensor"), sig::call_attrs<Pool2DAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType,
+                            FInferType::FromNative<&InferTypeMaxPool2DBackward>())
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.grad.avg_pool2d_backward */
@@ -204,23 +220,24 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("relax.op.grad.avg_pool2d_backward", avg_pool2d_backward);
 }
 
-Type InferTypeAvgPool2DBackward(const Call& call, const BlockBuilder& ctx) {
+Type InferTypeAvgPool2DBackward(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
   return GetType(call->args[1]);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.grad.avg_pool2d_backward")
-      .add_arg("output_grad", "The output gradient.")
-      .add_arg("data", "The input tensor")
-      .attrs_type<Pool2DAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeAvgPool2DBackward)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("output_grad", "The output gradient."),
+                 sig::arg("data", "The input tensor"), sig::call_attrs<Pool2DAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType,
+                            FInferType::FromNative<&InferTypeAvgPool2DBackward>())
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 /* relax.grad.take_backward */
 
 Expr take_backward(Expr output_grad, Expr x, Expr indices, ffi::Optional<int64_t> axis) {
-  ffi::ObjectPtr<TakeAttrs> attrs = ffi::make_object<TakeAttrs>();
+  ffi::ObjectPtr<TakeBackwardAttrs> attrs = ffi::make_object<TakeBackwardAttrs>();
   attrs->axis = std::move(axis);
 
   static const Op op = Op::Get("relax.grad.take_backward");
@@ -230,21 +247,24 @@ Expr take_backward(Expr output_grad, Expr x, Expr indices, ffi::Optional<int64_t
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
+  TakeBackwardAttrs::RegisterReflection();
   refl::GlobalDef().def("relax.op.grad.take_backward", take_backward);
 }
 
-Type InferTypeTakeBackward(const Call& call, const BlockBuilder& ctx) {
+Type InferTypeTakeBackward(const CallNode* call_node) {
+  const Call call = ffi::GetRef<Call>(call_node);
   return GetType(call->args[1]);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   OpDef("relax.grad.take_backward")
-      .add_arg("output_grad", "The output gradient.")
-      .add_arg("x", "The source tensor.")
-      .add_arg("indices", "The indices of the values to extract.")
-      .attrs_type<TakeAttrs>()
-      .set_attr<FInferType>("FInferType", InferTypeTakeBackward)
-      .set_attr<bool>("FPurity", true);
+      .signature(sig::arg("output_grad", "The output gradient."),
+                 sig::arg("x", "The source tensor."),
+                 sig::arg("indices", "The indices of the values to extract."),
+                 sig::call_attrs<TakeBackwardAttrs>())
+      .set_attr<FInferType>(tvm::op_attr::kInferType,
+                            FInferType::FromNative<&InferTypeTakeBackward>())
+      .set_attr<bool>(tvm::relax::op_attr::kPurity, true);
 }
 
 }  // namespace relax

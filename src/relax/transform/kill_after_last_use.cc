@@ -29,8 +29,9 @@
 #include <tvm/sym/analyzer.h>
 #include <tvm/tirx/stmt_functor.h>
 
-#include <map>
-#include <set>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "utils.h"
@@ -187,7 +188,7 @@ class CollectLastUsage : public ExprVisitor {
   }
 
   void VisitBinding_(const VarBindingNode* binding, const GenericConstNode* val) override {
-    if (val->value.as<runtime::Tensor>()) constant_tensors_.insert(binding->var.get());
+    if (val->value.as<ffi::TensorObj>()) constant_tensors_.insert(binding->var.get());
   }
 
  private:
@@ -280,7 +281,7 @@ Pass KillAfterLastUse() {
   auto pass_func = [=](Function func, IRModule m, PassContext pc) {
     return relax::KillAfterLastUse(std::move(func)).as_or_throw<Function>();
   };
-  return CreateFunctionPass(pass_func, /*opt_level=*/0, "KillAfterLastUse", {});
+  return CreateFunctionPass(pass_func, /*opt_level=*/0, "KillAfterLastUse");
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {

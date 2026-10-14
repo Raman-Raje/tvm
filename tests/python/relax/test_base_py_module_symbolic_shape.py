@@ -63,17 +63,17 @@ def test_infer_concrete_shape_error_when_uninferrable():
         bpm._infer_concrete_shape_from_args([k, 8], in_args=[])
 
 
-n_add_tir = T.dynamic("n")
-n_main_relax = T.dynamic("n")
+n_add_tir = T.dynamic("n", "int64")
+n_main_relax = T.dynamic("n", "int64")
 
 
 @R.py_module
 class AddModuleSymbolic(BasePyModule):
-    @Ts.prim_func
+    @Ts.function
     def add_tir(
-        x: T.Buffer((n_add_tir,), dtype="float32"),
-        y: T.Buffer((n_add_tir,), dtype="float32"),
-        out: T.Buffer((n_add_tir,), dtype="float32"),
+        x: T.Tensor((n_add_tir,), dtype="float32"),
+        y: T.Tensor((n_add_tir,), dtype="float32"),
+        out: T.Tensor((n_add_tir,), dtype="float32"),
     ):
         T.func_attr({"global_symbol": "add_tir"})
 
@@ -197,21 +197,21 @@ def test_infer_concrete_shape_wrong_ndim():
         bpm._infer_concrete_shape_from_args(sym_shape, [x])
 
 
-m_matmul_tir = T.dynamic("m")
-n_matmul_tir = T.dynamic("n")
-k_matmul_tir = T.dynamic("k")
-m_matmul_relax = T.dynamic("m")
-k_matmul_relax = T.dynamic("k")
-n_matmul_relax = T.dynamic("n")
+m_matmul_tir = T.dynamic("m", "int64")
+n_matmul_tir = T.dynamic("n", "int64")
+k_matmul_tir = T.dynamic("k", "int64")
+m_matmul_relax = T.dynamic("m", "int64")
+k_matmul_relax = T.dynamic("k", "int64")
+n_matmul_relax = T.dynamic("n", "int64")
 
 
 @R.py_module
 class MatrixModuleSymbolic(BasePyModule):
-    @Ts.prim_func
+    @Ts.function
     def matmul_tir(
-        a: T.Buffer((m_matmul_tir, k_matmul_tir), dtype="float32"),
-        b: T.Buffer((k_matmul_tir, n_matmul_tir), dtype="float32"),
-        c: T.Buffer((m_matmul_tir, n_matmul_tir), dtype="float32"),
+        a: T.Tensor((m_matmul_tir, k_matmul_tir), dtype="float32"),
+        b: T.Tensor((k_matmul_tir, n_matmul_tir), dtype="float32"),
+        c: T.Tensor((m_matmul_tir, n_matmul_tir), dtype="float32"),
     ):
         T.func_attr({"global_symbol": "matmul_tir"})
 

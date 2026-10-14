@@ -19,9 +19,7 @@
 from __future__ import annotations
 
 import functools
-import inspect
-from collections.abc import Callable
-from typing import Any, ParamSpec, TypeVar
+from typing import Any
 
 import tvm_ffi as _ffi
 
@@ -31,19 +29,19 @@ from tvm import ir
 from tvm import ir as _ir
 from tvm import tirx as _tir
 from tvm import tirx as tir
-from tvm.ir import Call
-from tvm.ir import register_op_attr as _register_op_attr
+from tvm.ir import Call, Var
+from tvm.ir.location import UNKNOWN_LOC, Location
 from tvm.ir.prim import _ffi_api as _prim_ffi
 from tvm.ir.prim import _ffi_api as _prim_ffi_api
 from tvm.script.ir_builder import base as _base
 from tvm.script.ir_builder.base import IRBuilder
 from tvm.script.ir_builder.frame import IRModuleFrame
+from tvm.script.ir_builder.stmt import _as_expr as _as_expr
 
 # pylint: disable=unused-import
 from tvm.target.codegen import llvm_lookup_intrinsic_id
-from tvm.tirx import Expr, is_buffer_var
+from tvm.tirx import Expr, is_tensor_var
 from tvm.tirx import op as _tir_op
-from tvm.tirx.exec_scope import Var
 
 # import tirx.expr for direct ir construction to pass structural_equal comparison
 from tvm.tirx.expr import (
@@ -62,7 +60,6 @@ from tvm.tirx.expr import (
     Broadcast,
     CallEffectKind,
     Cast,
-    CommReducer,
     Div,
     FloorDiv,
     FloorMod,
@@ -74,12 +71,12 @@ from tvm.tirx.expr import (
     Not,
     Or,
     Ramp,
-    Reduce,
     RShift,
     Select,
     Shuffle,
     Sub,
 )
+from tvm.tirx.op import CallFFIKernelAttr
 
 from . import _ffi_api
 from .external_kernel import call_kernel
@@ -93,18 +90,18 @@ def _call_global(func: ir.GlobalVar, *args: Expr) -> Call:
         for module_frame in reversed(list(IRBuilder.current().frames)):
             if isinstance(module_frame, IRModuleFrame) and func in module_frame.functions:
                 declaration = module_frame.functions[func]
-                if isinstance(declaration, tir.PrimFunc):
+                if isinstance(declaration, tir.Function):
                     # The Relax-facing signature may erase pointer results to Any.
-                    return Call(func, args, ret_ty=declaration.ret_type)
+                    return Call(func, args, ty=declaration.ret_type)
                 break
     if isinstance(func.ty, ir.FuncType):
-        return Call(func, args, ret_ty=func.ty.ret_type)
+        return Call(func, args, ty=func.ty.ret_type)
     return Call(func, args)
 
 
-def cast(value, dtype, span=None):
+def cast(value, dtype, loc: Location = UNKNOWN_LOC):
     """Cast an expression to the requested data type."""
-    return _prim_ffi_api._cast(dtype, value, span)  # type: ignore[attr-defined]
+    return _prim_ffi_api._cast(dtype, value, loc)  # type: ignore[attr-defined]
 
 
 def Let(  # pylint: disable=invalid-name
@@ -155,70 +152,13 @@ def max(a: Expr, b: Expr) -> Expr:  # pylint: disable=redefined-builtin
     return _ffi_api.max(a, b)  # type: ignore[attr-defined] # pylint: disable=no-member
 
 
-def comm_reducer(combiner: Callable, identity: list[Expr]) -> CommReducer:
-    """
-    Create a CommReducer from lambda inputs/outputs and the identities
+def _llvm_result_type(func):
+    """Keep symbolic intrinsic-name conversion when spelling the result as ty."""
 
-    Parameters
-    ----------
-    combiner : Callable
-        A binary function which takes two Expr as input to return a Expr.
-
-    identity : List[Expr]
-        A list of types of output Expr.
-
-    Returns
-    -------
-    res : CommReducer
-        The CommReducer.
-    """
-    params = inspect.signature(combiner).parameters
-    num_args = len(params)
-    args = []
-    for name, i in zip(params.keys(), identity + identity):
-        if isinstance(i, int):
-            args.append(Var(name, "int32"))
-        else:
-            args.append(Var(name, i.ty))
-    res = combiner(*args)
-    if not isinstance(res, tuple):
-        res = (res,)
-    return CommReducer(args[: num_args // 2], args[num_args // 2 :], res, identity)
-
-
-T = TypeVar("T")
-
-
-P = ParamSpec("P")
-
-
-def _op_wrapper(func: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(func)
-    def wrapped(*args, **kwargs) -> T:
-        if "dtype" in kwargs:
-            kwargs.pop("dtype")
-        return func(*args, **kwargs)
+    def wrapped(name, *args, ty, loc: Location = UNKNOWN_LOC):
+        return func(ty, name, *args, loc=loc)
 
-    # Expose underlying tir op name for printer registration
-    try:
-        wrapped.__tir_op_name__ = getattr(func, "__name__", None)
-    except Exception:  # pragma: no cover
-        pass
-    return wrapped
-
-
-def _dtype_forward(func):
-    @functools.wraps(func)
-    def wrapped(*args, **kwargs):
-        if "dtype" in kwargs:
-            args = (kwargs.pop("dtype"), *args)
-        return func(*args, **kwargs)
-
-    # Expose underlying tir op name for printer registration
-    try:
-        wrapped.__tir_op_name__ = getattr(func, "__name__", None)
-    except Exception:  # pragma: no cover
-        pass
     return wrapped
 
 
@@ -226,65 +166,40 @@ class WebGPUNamespace:
     """The WebGPU intrinsics submodule."""
 
     @staticmethod
-    def subgroup_shuffle(var, lane):
-        if is_buffer_var(var):
+    def subgroup_shuffle(var, lane, *, ty=None, loc: Location = UNKNOWN_LOC):
+        if is_tensor_var(var):
             var = var[0]
-        return _tir_op.call_intrin(var.ty, "tirx.webgpu.subgroup_shuffle", var, lane)
+        return Call(
+            "tirx.webgpu.subgroup_shuffle",
+            [var, lane],
+            ty=ty,
+            loc=loc,
+        )
 
     @staticmethod
-    def subgroup_shuffle_up(var, delta):
-        if is_buffer_var(var):
+    def subgroup_shuffle_up(var, delta, *, ty=None, loc: Location = UNKNOWN_LOC):
+        if is_tensor_var(var):
             var = var[0]
-        return _tir_op.call_intrin(var.ty, "tirx.webgpu.subgroup_shuffle_up", var, delta)
+        return Call(
+            "tirx.webgpu.subgroup_shuffle_up",
+            [var, delta],
+            ty=ty,
+            loc=loc,
+        )
 
     @staticmethod
-    def subgroup_shuffle_down(var, delta):
-        if is_buffer_var(var):
+    def subgroup_shuffle_down(var, delta, *, ty=None, loc: Location = UNKNOWN_LOC):
+        if is_tensor_var(var):
             var = var[0]
-        return _tir_op.call_intrin(var.ty, "tirx.webgpu.subgroup_shuffle_down", var, delta)
+        return Call(
+            "tirx.webgpu.subgroup_shuffle_down",
+            [var, delta],
+            ty=ty,
+            loc=loc,
+        )
 
 
 webgpu = WebGPUNamespace()
-
-
-def _register_script_namespace_printer_names(ns_obj, dotted_prefix, override=False):
-    def register_printer_name(op_name, script_name):
-        try:
-            op = ir.Op.get(op_name)
-        except AttributeError:
-            return
-        if op.has_attr("TScriptPrinterName") and op.get_attr("TScriptPrinterName") == script_name:
-            return
-        _register_op_attr(op_name, "TScriptPrinterName", script_name, override=override)
-
-    def visit(ns_obj, dotted_prefix):
-        # If the namespace object itself maps to an op via __call__
-        call_op = getattr(ns_obj, "__tir_call_op_name__", None)
-        if call_op:
-            flat_name = f"tirx.{call_op}"
-            for op_name in {flat_name, _tir_op._canonical_device_intrin_name(flat_name)}:
-                register_printer_name(op_name, dotted_prefix)
-        # Walk attributes to find wrapped ops and sub-namespaces
-        for name in dir(ns_obj):
-            if name.startswith("_"):
-                continue
-            try:
-                val = getattr(ns_obj, name)
-            except Exception:
-                continue
-            # Sub-namespace: recurse
-            if hasattr(val, "__dict__") and val.__class__.__name__.endswith("Namespace"):
-                visit(val, f"{dotted_prefix}.{name}")
-                continue
-            # Wrapped op (callable with attached __tir_op_name__)
-            op_name = getattr(val, "__tir_op_name__", None)
-            if callable(val) and op_name:
-                flat_name = f"tirx.{op_name}"
-                script_name = f"{dotted_prefix}.{name}"
-                for full_op_name in {flat_name, _tir_op._canonical_device_intrin_name(flat_name)}:
-                    register_printer_name(full_op_name, script_name)
-
-    visit(ns_obj, dotted_prefix)
 
 
 _SCRIPT_NAMESPACES = {}
@@ -297,7 +212,7 @@ def _get_script_namespace(name: str) -> object:
     raise AttributeError(f"No script namespace {name!r}")
 
 
-def register_script_namespace(name: str, namespace: object, override: bool = False) -> object:
+def register_script_namespace(name: str, namespace: object) -> object:
     """Register a construction namespace and return it.
 
     Parameters
@@ -306,9 +221,6 @@ def register_script_namespace(name: str, namespace: object, override: bool = Fal
         Namespace name on the TIRx builder facade.
     namespace : object
         Construction namespace object.
-    override : bool, optional
-        Replace differing operator printer names if True. Existing equal names
-        are reused; other duplicates raise ValueError.
     """
     _SCRIPT_NAMESPACES[name] = namespace
     globals()[name] = namespace
@@ -330,373 +242,355 @@ def register_script_namespace(name: str, namespace: object, override: bool = Fal
         if isinstance(module_all, list) and name not in module_all:
             module_all.append(name)
 
-    _register_script_namespace_printer_names(namespace, name, override)
     return namespace
 
 
-def _register_tir_namespace_printer_names():
-    try:
-        _register_script_namespace_printer_names(webgpu, "webgpu")
-    except Exception:
-        # Best-effort registration; avoid import-time hard failure
-        pass
+abs = _tir_op.abs  # pylint: disable=redefined-builtin
 
 
-_register_tir_namespace_printer_names()
+acos = _tir_op.acos
 
 
-abs = _op_wrapper(_tir_op.abs)  # pylint: disable=redefined-builtin
+acosh = _tir_op.acosh
 
 
-acos = _op_wrapper(_tir_op.acos)
+address_of = _tir_op.address_of
 
+atomic_add = _ir.op._make_op_api(_ir.Op.get("tirx.atomic_add"), __name__)
 
-acosh = _op_wrapper(_tir_op.acosh)
+call_spirv_pure_glsl450 = _ir.op._make_op_api(_ir.Op.get("tirx.call_spirv_pure_glsl450"), __name__)
 
+device_scope = _ir.op._make_op_api(_ir.Op.get("tirx.device_scope"), __name__)
 
-address_of = _op_wrapper(_tir_op.address_of)
+prefetch = _ir.op._make_op_api(_ir.Op.get("tirx.prefetch"), __name__)
 
+static_handle = _ir.op._make_op_api(_ir.Op.get("tirx.static_handle"), __name__)
 
-asin = _op_wrapper(_tir_op.asin)
 
+asin = _tir_op.asin
 
-asinh = _op_wrapper(_tir_op.asinh)
 
+asinh = _tir_op.asinh
 
-atan = _op_wrapper(_tir_op.atan)
 
+atan = _tir_op.atan
 
-atan2 = _op_wrapper(_tir_op.atan2)
 
+atan2 = _tir_op.atan2
 
-atanh = _op_wrapper(_tir_op.atanh)
 
+atanh = _tir_op.atanh
 
-bitwise_and = _op_wrapper(_tir_op.bitwise_and)
 
+bitwise_and = _tir_op.bitwise_and
 
-bitwise_not = _op_wrapper(_tir_op.bitwise_not)
 
+bitwise_not = _tir_op.bitwise_not
 
-bitwise_or = _op_wrapper(_tir_op.bitwise_or)
 
+bitwise_or = _tir_op.bitwise_or
 
-bitwise_xor = _op_wrapper(_tir_op.bitwise_xor)
 
+bitwise_xor = _tir_op.bitwise_xor
 
-ceil = _op_wrapper(_tir_op.ceil)
 
+ceil = _ir.op._make_op_api(_ir.Op.get("prim.ceil"), __name__)
 
-clz = _op_wrapper(_tir_op.clz)
 
+clz = _ir.op._make_op_api(_ir.Op.get("prim.clz"), __name__)
 
-copysign = _op_wrapper(_tir_op.copysign)
 
+copysign = _tir_op.copysign
 
-cos = _op_wrapper(_tir_op.cos)
 
+cos = _tir_op.cos
 
-cosh = _op_wrapper(_tir_op.cosh)
 
+cosh = _tir_op.cosh
 
-erf = _op_wrapper(_tir_op.erf)
 
+erf = _tir_op.erf
 
-exp = _op_wrapper(_tir_op.exp)
 
+exp = _tir_op.exp
 
-exp2 = _op_wrapper(_tir_op.exp2)
 
+exp2 = _tir_op.exp2
 
-exp10 = _op_wrapper(_tir_op.exp10)
 
+exp10 = _tir_op.exp10
 
-filter = _op_wrapper(_tir_op.filter)  # pylint: disable=redefined-builtin
 
+gpu_thread_filter = _tir_op.gpu_thread_filter
 
-selector = _op_wrapper(_tir_op.selector)
 
+gpu_active_thread_selector = _tir_op.gpu_active_thread_selector
 
-floor = _op_wrapper(_tir_op.floor)
 
+floor = _ir.op._make_op_api(_ir.Op.get("prim.floor"), __name__)
 
-ceildiv = _op_wrapper(_tir_op.ceildiv)
 
+ceildiv = _tir_op.ceildiv
 
-floordiv = _op_wrapper(_tir_op.floordiv)
 
+floordiv = _tir_op.floordiv
 
-floormod = _op_wrapper(_tir_op.floormod)
 
+floormod = _tir_op.floormod
 
-fmod = _op_wrapper(_tir_op.fmod)
 
+fmod = _tir_op.fmod
 
-fma = _op_wrapper(_tir_op.fma)
 
+fma = _tir_op.fma
 
-hypot = _op_wrapper(_tir_op.hypot)
 
+hypot = _tir_op.hypot
 
-if_then_else = _op_wrapper(_tir_op.if_then_else)
 
+if_then_else = _ir.op._make_op_api(_ir.Op.get("prim.if_then_else"), __name__)
 
-infinity = _op_wrapper(_tir_op.infinity)
 
+infinity = _tir_op.infinity
 
-isfinite = _op_wrapper(_tir_op.isfinite)
 
+isfinite = _tir_op.isfinite
 
-isinf = _op_wrapper(_tir_op.isinf)
 
+isinf = _tir_op.isinf
 
-isnan = _op_wrapper(_tir_op.isnan)
 
+isnan = _tir_op.isnan
 
-isnullptr = _op_wrapper(_tir_op.isnullptr)
 
+isnullptr = _tir_op.isnullptr
 
-ldexp = _op_wrapper(_tir_op.ldexp)
 
+ldexp = _tir_op.ldexp
 
-likely = _op_wrapper(_tir_op.likely)
 
+likely = _ir.op._make_op_api(_ir.Op.get("prim.likely"), __name__)
 
-log = _op_wrapper(_tir_op.log)
 
+log = _tir_op.log
 
-log1p = _op_wrapper(_tir_op.log1p)
 
+log1p = _tir_op.log1p
 
-log2 = _op_wrapper(_tir_op.log2)
 
+log2 = _tir_op.log2
 
-log10 = _op_wrapper(_tir_op.log10)
 
+log10 = _tir_op.log10
 
-max_value = _op_wrapper(_tir_op.max_value)
 
+max_value = _tir_op.max_value
 
-min_value = _op_wrapper(_tir_op.min_value)
 
+min_value = _tir_op.min_value
 
-nearbyint = _op_wrapper(_tir_op.nearbyint)
 
+nearbyint = _ir.op._make_op_api(_ir.Op.get("prim.nearbyint"), __name__)
 
-nextafter = _op_wrapper(_tir_op.nextafter)
 
+nextafter = _tir_op.nextafter
 
-popcount = _op_wrapper(_tir_op.popcount)
 
+popcount = _tir_op.popcount
 
-pow = _op_wrapper(_tir_op.pow)  # pylint: disable=redefined-builtin
 
+pow = _ir.op._make_op_api(_ir.Op.get("prim.pow"), __name__)
 
-q_multiply_shift = _op_wrapper(_tir_op.q_multiply_shift)
 
+round = _ir.op._make_op_api(_ir.Op.get("prim.round"), __name__)
 
-q_multiply_shift_per_axis = _op_wrapper(_tir_op.q_multiply_shift_per_axis)
 
+rsqrt = _tir_op.rsqrt
 
-round = _op_wrapper(_tir_op.round)  # pylint: disable=redefined-builtin
 
+shift_left = _tir_op.shift_left
 
-rsqrt = _op_wrapper(_tir_op.rsqrt)
 
+shift_right = _tir_op.shift_right
 
-shift_left = _op_wrapper(_tir_op.shift_left)
 
+sigmoid = _tir_op.sigmoid
 
-shift_right = _op_wrapper(_tir_op.shift_right)
 
+sin = _tir_op.sin
 
-sigmoid = _op_wrapper(_tir_op.sigmoid)
 
+sinh = _tir_op.sinh
 
-sin = _op_wrapper(_tir_op.sin)
 
+sqrt = _tir_op.sqrt
 
-sinh = _op_wrapper(_tir_op.sinh)
 
+tan = _tir_op.tan
 
-sqrt = _op_wrapper(_tir_op.sqrt)
 
+tanh = _tir_op.tanh
 
-tan = _op_wrapper(_tir_op.tan)
 
+gpu_thread_return = _tir_op.gpu_thread_return
 
-tanh = _op_wrapper(_tir_op.tanh)
 
+trunc = _ir.op._make_op_api(_ir.Op.get("prim.trunc"), __name__)
 
-thread_return = _op_wrapper(_tir_op.thread_return)
 
+truncdiv = _tir_op.truncdiv
 
-trunc = _op_wrapper(_tir_op.trunc)
 
+truncmod = _tir_op.truncmod
 
-truncdiv = _op_wrapper(_tir_op.truncdiv)
 
+ptr_byte_offset = _tir_op.ptr_byte_offset
 
-truncmod = _op_wrapper(_tir_op.truncmod)
 
+throw_last_error = _tir_op.throw_last_error
 
-tvm_access_ptr = _op_wrapper(_tir_op.tvm_access_ptr)
 
+stack_alloca = _tir_op.stack_alloca
 
-ptr_byte_offset = _op_wrapper(_tir_op.ptr_byte_offset)
 
+stack_make_shape = _tir_op.stack_make_shape
 
-tvm_throw_last_error = _op_wrapper(_tir_op.tvm_throw_last_error)
 
+stack_make_dltensor = _tir_op.stack_make_dltensor
 
-print_buffer = _op_wrapper(_tir_op.print_buffer)
 
+call_packed = _tir_op.call_packed
 
-tvm_stack_alloca = _op_wrapper(_tir_op.tvm_stack_alloca)
 
+_call_ffi_kernel_raw = _ir.op._make_op_api(_ir.Op.get("tirx.call_ffi_kernel"), __name__)
 
-tvm_stack_make_shape = _op_wrapper(_tir_op.tvm_stack_make_shape)
 
+def call_ffi_kernel(*args, launch=None, **kwargs):
+    """Call a kernel with a CUDA LaunchConfig, or read a printed low-level call."""
+    if launch is not None:
+        return _tir_op.call_ffi_kernel(*args, launch=launch, **kwargs)
+    return _call_ffi_kernel_raw(*args, **kwargs)
 
-tvm_stack_make_array = _op_wrapper(_tir_op.tvm_stack_make_array)
 
+call_cpacked = _tir_op.call_cpacked
 
-call_packed = _op_wrapper(_tir_op.call_packed)
 
+call_packed_lowered = _tir_op.call_packed_lowered
 
-call_ffi_kernel = _op_wrapper(_tir_op.call_ffi_kernel)
 
+call_cpacked_lowered = _tir_op.call_cpacked_lowered
 
-tensormap_encode_tiled = _op_wrapper(_tir_op.tensormap_encode_tiled)
 
+tensor_data_ptr = _tir_op.tensor_data_ptr
 
-call_cpacked = _op_wrapper(_tir_op.call_cpacked)
 
+handle_add_byte_offset = _tir_op.handle_add_byte_offset
 
-call_packed_lowered = _op_wrapper(_tir_op.call_packed_lowered)
 
+abi_field_set = _tir_op.abi_field_set
 
-call_cpacked_lowered = _op_wrapper(_tir_op.call_cpacked_lowered)
 
+abi_field_get = _ir.op._make_op_api(_ir.Op.get("tirx.abi_field_get"), __name__)
 
-handle_add_byte_offset = _op_wrapper(_tir_op.handle_add_byte_offset)
 
+gpu_thread_invariant = _tir_op.gpu_thread_invariant
 
-tvm_struct_set = _op_wrapper(_tir_op.tvm_struct_set)
 
+gpu_thread_allreduce = _tir_op.gpu_thread_allreduce
 
-tvm_struct_get = _tir_op.tvm_struct_get
 
+gpu_load_matrix_sync = _tir_op.gpu_load_matrix_sync
 
-tvm_thread_invariant = _op_wrapper(_tir_op.tvm_thread_invariant)
 
+gpu_mma_sync = _tir_op.gpu_mma_sync
 
-tvm_thread_allreduce = _op_wrapper(_tir_op.tvm_thread_allreduce)
 
+gpu_fill_fragment = _tir_op.gpu_fill_fragment
 
-tvm_load_matrix_sync = _op_wrapper(_tir_op.tvm_load_matrix_sync)
 
+gpu_store_matrix_sync = _tir_op.gpu_store_matrix_sync
 
-tvm_mma_sync = _op_wrapper(_tir_op.tvm_mma_sync)
 
+gpu_storage_sync = _tir_op.gpu_storage_sync
+cpu_parallel_barrier = _tir_op.cpu_parallel_barrier
 
-tvm_bmma_sync = _op_wrapper(_tir_op.tvm_bmma_sync)
 
+kernel_replace_point = _tir_op.kernel_replace_point
 
-tvm_fill_fragment = _op_wrapper(_tir_op.tvm_fill_fragment)
 
+gpu_warp_shuffle = _tir_op.gpu_warp_shuffle
 
-tvm_store_matrix_sync = _op_wrapper(_tir_op.tvm_store_matrix_sync)
 
+gpu_warp_shuffle_up = _tir_op.gpu_warp_shuffle_up
 
-tvm_storage_sync = _tir_op.tvm_storage_sync
 
+gpu_warp_shuffle_down = _tir_op.gpu_warp_shuffle_down
 
-tvm_kernel_replace_point = _op_wrapper(_tir_op.tvm_kernel_replace_point)
 
+gpu_warp_shuffle_xor = _tir_op.gpu_warp_shuffle_xor
 
-tvm_warp_shuffle = _tir_op.tvm_warp_shuffle
 
+gpu_warp_activemask = _tir_op.gpu_warp_activemask
 
-tvm_warp_shuffle_up = _tir_op.tvm_warp_shuffle_up
 
+assume = _tir_op.assume
+assume_aligned = _tir_op.assume_aligned
 
-tvm_warp_shuffle_down = _tir_op.tvm_warp_shuffle_down
 
+undef = _tir_op.undef
 
-tvm_warp_shuffle_xor = _tir_op.tvm_warp_shuffle_xor
 
+alloc_workspace = _tir_op.alloc_workspace
 
-tvm_warp_activemask = _tir_op.tvm_warp_activemask
 
+free_workspace = _tir_op.free_workspace
 
-cooperative_tensor_fill = _op_wrapper(_tir_op.cooperative_tensor_fill)
 
+vscale = _tir_op.vscale
 
-cooperative_tensor_load = _op_wrapper(_tir_op.cooperative_tensor_load)
 
+ignore_loop_partition = _tir_op.ignore_loop_partition
 
-cooperative_tensor_store = _op_wrapper(_tir_op.cooperative_tensor_store)
 
+reinterpret = _ir.op._make_op_api(_ir.Op.get("tirx.reinterpret"), __name__)
 
-cooperative_tensor_multiply_accumulate = _op_wrapper(_tir_op.cooperative_tensor_multiply_accumulate)
 
+call_extern = _ir.op._make_op_api(_ir.Op.get("tirx.call_extern"), __name__)
 
-assume = _op_wrapper(_tir_op.assume)
 
+def call_intrin(func_name, *args, ty, attrs=None, loc: Location = UNKNOWN_LOC):
+    """Call an intrinsic with an explicit result type."""
+    return _tir_op.call_intrin(ty, func_name, *args, attrs=attrs, loc=loc)
 
-undef = _op_wrapper(_tir_op.undef)
 
+call_llvm_intrin = _llvm_result_type(_tir_op.call_llvm_intrin)
 
-TVMBackendAllocWorkspace = _op_wrapper(_tir_op.TVMBackendAllocWorkspace)
 
+call_llvm_pure_intrin = _llvm_result_type(_tir_op.call_llvm_pure_intrin)
 
-TVMBackendFreeWorkspace = _op_wrapper(_tir_op.TVMBackendFreeWorkspace)
 
+call_pure_extern = _ir.op._make_op_api(_ir.Op.get("tirx.call_pure_extern"), __name__)
 
-vscale = _op_wrapper(_tir_op.vscale)
 
+vector_low = _ir.op._make_op_api(_ir.Op.get("tirx.vector_low"), __name__)
 
-ignore_loop_partition = _op_wrapper(_tir_op.ignore_loop_partition)
 
+vector_high = _ir.op._make_op_api(_ir.Op.get("tirx.vector_high"), __name__)
 
-reinterpret = _dtype_forward(_tir_op.reinterpret)
 
+vector_combine = _ir.op._make_op_api(_ir.Op.get("tirx.vector_combine"), __name__)
 
-call_extern = _dtype_forward(_tir_op.call_extern)
 
+get_active_lane_mask = _ir.op._make_op_api(_ir.Op.get("tirx.get_active_lane_mask"), __name__)
 
-call_intrin = _dtype_forward(_tir_op.call_intrin)
 
+masked_load = _ir.op._make_op_api(_ir.Op.get("tirx.masked_load"), __name__)
 
-call_llvm_intrin = _dtype_forward(_tir_op.call_llvm_intrin)
 
+masked_store = _tir_op.masked_store
 
-call_llvm_pure_intrin = _dtype_forward(_tir_op.call_llvm_pure_intrin)
 
-
-call_pure_extern = _dtype_forward(_tir_op.call_pure_extern)
-
-
-vectorlow = _dtype_forward(_tir_op.vectorlow)
-
-
-vectorhigh = _dtype_forward(_tir_op.vectorhigh)
-
-
-vectorcombine = _dtype_forward(_tir_op.vectorcombine)
-
-
-get_active_lane_mask = _dtype_forward(_tir_op.get_active_lane_mask)
-
-
-masked_load = _dtype_forward(_tir_op.masked_load)
-
-
-masked_store = _op_wrapper(_tir_op.masked_store)
-
-
-dp4a = _dtype_forward(_tir_op.dp4a)
+gpu_dp4a = _tir_op.gpu_dp4a
 
 
 broadcast = Broadcast
@@ -705,31 +599,7 @@ broadcast = Broadcast
 ramp = Ramp
 
 
-fabs = abs
-
-
-tvm_call_packed = call_packed
-
-
-tvm_call_cpacked = call_cpacked
-
-
-tvm_call_packed_lowered = call_packed_lowered
-
-
-tvm_call_cpacked_lowered = call_cpacked_lowered
-
-
-def _as_expr(value):
-    if isinstance(value, _ffi.ObjectConvertible):
-        value = value.asobject()
-    if isinstance(value, _ir.Expr):
-        return value
-    if isinstance(value, str):
-        return _ir.StringImm(value)
-    if isinstance(value, list | tuple):
-        return _ir.Tuple([_as_expr(item) for item in value])
-    return _tir.const(value)
+fabs = _ir.op._make_op_api(_ir.Op.get("prim.fabs"), __name__)
 
 
 def logical_and(*values):
@@ -867,8 +737,8 @@ __all__ = [
     "Broadcast",
     "Call",
     "CallEffectKind",
+    "CallFFIKernelAttr",
     "Cast",
-    "CommReducer",
     "Div",
     "FloorDiv",
     "FloorMod",
@@ -882,22 +752,24 @@ __all__ = [
     "Or",
     "RShift",
     "Ramp",
-    "Reduce",
     "Select",
     "Shuffle",
     "Sub",
-    "TVMBackendAllocWorkspace",
-    "TVMBackendFreeWorkspace",
+    "abi_field_get",
+    "abi_field_set",
     "abs",
     "acos",
     "acosh",
     "address_of",
+    "alloc_workspace",
     "asin",
     "asinh",
     "assume",
+    "assume_aligned",
     "atan",
     "atan2",
     "atanh",
+    "atomic_add",
     "bitwise_and",
     "bitwise_not",
     "bitwise_or",
@@ -914,31 +786,44 @@ __all__ = [
     "call_packed",
     "call_packed_lowered",
     "call_pure_extern",
+    "call_spirv_pure_glsl450",
     "cast",
     "ceil",
     "ceildiv",
     "clz",
-    "comm_reducer",
-    "cooperative_tensor_fill",
-    "cooperative_tensor_load",
-    "cooperative_tensor_multiply_accumulate",
-    "cooperative_tensor_store",
     "copysign",
     "cos",
     "cosh",
-    "dp4a",
+    "cpu_parallel_barrier",
+    "device_scope",
     "erf",
     "exp",
     "exp2",
     "exp10",
     "fabs",
-    "filter",
     "floor",
     "floordiv",
     "floormod",
     "fma",
     "fmod",
+    "free_workspace",
     "get_active_lane_mask",
+    "gpu_active_thread_selector",
+    "gpu_dp4a",
+    "gpu_fill_fragment",
+    "gpu_load_matrix_sync",
+    "gpu_mma_sync",
+    "gpu_storage_sync",
+    "gpu_store_matrix_sync",
+    "gpu_thread_allreduce",
+    "gpu_thread_filter",
+    "gpu_thread_invariant",
+    "gpu_thread_return",
+    "gpu_warp_activemask",
+    "gpu_warp_shuffle",
+    "gpu_warp_shuffle_down",
+    "gpu_warp_shuffle_up",
+    "gpu_warp_shuffle_xor",
     "handle_add_byte_offset",
     "hypot",
     "if_then_else",
@@ -948,6 +833,7 @@ __all__ = [
     "isinf",
     "isnan",
     "isnullptr",
+    "kernel_replace_point",
     "ldexp",
     "likely",
     "llvm_lookup_intrinsic_id",
@@ -968,64 +854,40 @@ __all__ = [
     "nextafter",
     "popcount",
     "pow",
-    "print_buffer",
+    "prefetch",
     "ptr_byte_offset",
-    "q_multiply_shift",
-    "q_multiply_shift_per_axis",
     "ramp",
     "register_script_namespace",
     "reinterpret",
     "round",
     "rsqrt",
     "select",
-    "selector",
     "shift_left",
     "shift_right",
     "sigmoid",
     "sin",
     "sinh",
     "sqrt",
+    "stack_alloca",
+    "stack_make_dltensor",
+    "stack_make_shape",
+    "static_handle",
     "tan",
     "tanh",
-    "tensormap_encode_tiled",
-    "thread_return",
+    "tensor_data_ptr",
+    "throw_last_error",
     "trunc",
     "truncdiv",
     "truncmod",
-    "tvm_access_ptr",
-    "tvm_bmma_sync",
-    "tvm_call_cpacked",
-    "tvm_call_cpacked_lowered",
-    "tvm_call_packed",
-    "tvm_call_packed_lowered",
-    "tvm_fill_fragment",
-    "tvm_kernel_replace_point",
-    "tvm_load_matrix_sync",
-    "tvm_mma_sync",
-    "tvm_stack_alloca",
-    "tvm_stack_make_array",
-    "tvm_stack_make_shape",
-    "tvm_storage_sync",
-    "tvm_store_matrix_sync",
-    "tvm_struct_get",
-    "tvm_struct_set",
-    "tvm_thread_allreduce",
-    "tvm_thread_invariant",
-    "tvm_throw_last_error",
-    "tvm_warp_activemask",
-    "tvm_warp_shuffle",
-    "tvm_warp_shuffle_down",
-    "tvm_warp_shuffle_up",
-    "tvm_warp_shuffle_xor",
     "undef",
-    "vectorcombine",
-    "vectorhigh",
-    "vectorlow",
+    "vector_combine",
+    "vector_high",
+    "vector_low",
     "vscale",
     "webgpu",
 ]
 
-_Span = _base.SpanEntry | _ir.Span | None
+_Loc = _base.LocationEntry | _ir.Location | None
 
 
 def if_then_else_(condition: Any, true_value: Any, false_value: Any) -> Any:
@@ -1048,34 +910,40 @@ def not_(value: Any) -> Any:
     return logical_not(value)
 
 
-def lt_(lhs: Any, rhs: Any, *, span: _Span = None) -> _ir.Expr:
+def lt_(lhs: Any, rhs: Any, *, loc: _Loc = None) -> _ir.Expr:
     """Implements :func:`tvm.script.ir_builder.parser_protocol.lt_`."""
-    return _prim_ffi._OpLT(lhs, rhs, span.span if isinstance(span, _base.SpanEntry) else span)
+    loc = UNKNOWN_LOC if loc is None else loc
+    return _prim_ffi._OpLT(lhs, rhs, loc.loc if isinstance(loc, _base.LocationEntry) else loc)
 
 
-def le_(lhs: Any, rhs: Any, *, span: _Span = None) -> _ir.Expr:
+def le_(lhs: Any, rhs: Any, *, loc: _Loc = None) -> _ir.Expr:
     """Implements :func:`tvm.script.ir_builder.parser_protocol.le_`."""
-    return _prim_ffi._OpLE(lhs, rhs, span.span if isinstance(span, _base.SpanEntry) else span)
+    loc = UNKNOWN_LOC if loc is None else loc
+    return _prim_ffi._OpLE(lhs, rhs, loc.loc if isinstance(loc, _base.LocationEntry) else loc)
 
 
-def gt_(lhs: Any, rhs: Any, *, span: _Span = None) -> _ir.Expr:
+def gt_(lhs: Any, rhs: Any, *, loc: _Loc = None) -> _ir.Expr:
     """Implements :func:`tvm.script.ir_builder.parser_protocol.gt_`."""
-    return _prim_ffi._OpGT(lhs, rhs, span.span if isinstance(span, _base.SpanEntry) else span)
+    loc = UNKNOWN_LOC if loc is None else loc
+    return _prim_ffi._OpGT(lhs, rhs, loc.loc if isinstance(loc, _base.LocationEntry) else loc)
 
 
-def ge_(lhs: Any, rhs: Any, *, span: _Span = None) -> _ir.Expr:
+def ge_(lhs: Any, rhs: Any, *, loc: _Loc = None) -> _ir.Expr:
     """Implements :func:`tvm.script.ir_builder.parser_protocol.ge_`."""
-    return _prim_ffi._OpGE(lhs, rhs, span.span if isinstance(span, _base.SpanEntry) else span)
+    loc = UNKNOWN_LOC if loc is None else loc
+    return _prim_ffi._OpGE(lhs, rhs, loc.loc if isinstance(loc, _base.LocationEntry) else loc)
 
 
-def eq_(lhs: Any, rhs: Any, *, span: _Span = None) -> _ir.Expr:
+def eq_(lhs: Any, rhs: Any, *, loc: _Loc = None) -> _ir.Expr:
     """Implements :func:`tvm.script.ir_builder.parser_protocol.eq_`."""
-    return _prim_ffi._OpEQ(lhs, rhs, span.span if isinstance(span, _base.SpanEntry) else span)
+    loc = UNKNOWN_LOC if loc is None else loc
+    return _prim_ffi._OpEQ(lhs, rhs, loc.loc if isinstance(loc, _base.LocationEntry) else loc)
 
 
-def ne_(lhs: Any, rhs: Any, *, span: _Span = None) -> _ir.Expr:
+def ne_(lhs: Any, rhs: Any, *, loc: _Loc = None) -> _ir.Expr:
     """Implements :func:`tvm.script.ir_builder.parser_protocol.ne_`."""
-    return _prim_ffi._OpNE(lhs, rhs, span.span if isinstance(span, _base.SpanEntry) else span)
+    loc = UNKNOWN_LOC if loc is None else loc
+    return _prim_ffi._OpNE(lhs, rhs, loc.loc if isinstance(loc, _base.LocationEntry) else loc)
 
 
 __all__ += ["and_", "eq_", "ge_", "gt_", "if_then_else_", "le_", "lt_", "ne_", "not_", "or_"]

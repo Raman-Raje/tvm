@@ -32,14 +32,14 @@ from tvm.script import tirx as T
 # pylint: disable=no-member,invalid-name,unused-variable
 
 
-@Ts.prim_func
+@Ts.function
 def matmul_bias_before(
-    A: T.Buffer((16, 16), "int8"),
-    B: T.Buffer((16, 16), "int8"),
-    C: T.Buffer((16, 16), "int32"),
-    D: T.Buffer((16, 16), "int32"),
+    A: T.Tensor((16, 16), "int8"),
+    B: T.Tensor((16, 16), "int8"),
+    C: T.Tensor((16, 16), "int32"),
+    D: T.Tensor((16, 16), "int32"),
 ) -> None:
-    temp = Ts.sblock_alloc_buffer((16, 16), dtype="int32")
+    temp = Ts.sblock_alloc_tensor((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
         with Ts.sblock("multiply"):
             vi, vj, vk = Ts.axis.remap("SSR", [i, j, k])
@@ -52,14 +52,14 @@ def matmul_bias_before(
             D[vi, vj] = temp[vi, vj] + C[vi, vj]
 
 
-@Ts.prim_func
+@Ts.function
 def matmul_bias_expected(
-    A: T.Buffer((16, 16), "int8"),
-    B: T.Buffer((16, 16), "int8"),
-    C: T.Buffer((16, 16), "int32"),
-    D: T.Buffer((16, 16), "int32"),
+    A: T.Tensor((16, 16), "int8"),
+    B: T.Tensor((16, 16), "int8"),
+    C: T.Tensor((16, 16), "int32"),
+    D: T.Tensor((16, 16), "int32"),
 ) -> None:
-    temp = Ts.sblock_alloc_buffer((16, 16), dtype="int32")
+    temp = Ts.sblock_alloc_tensor((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
         with Ts.sblock("multiply"):
             vi, vj, vk = Ts.axis.remap("SSR", [i, j, k])
@@ -70,14 +70,14 @@ def matmul_bias_expected(
             D[vi, vj] = D[vi, vj] + T.cast(A[vi, vk], "int32") * T.cast(B[vj, vk], "int32")
 
 
-@Ts.prim_func
+@Ts.function
 def matmul_bias_fp32_before(
-    A: T.Buffer((32, 32), "float32"),
-    B: T.Buffer((32, 32), "float32"),
-    C: T.Buffer((32, 32), "float32"),
-    D: T.Buffer((32, 32), "float32"),
+    A: T.Tensor((32, 32), "float32"),
+    B: T.Tensor((32, 32), "float32"),
+    C: T.Tensor((32, 32), "float32"),
+    D: T.Tensor((32, 32), "float32"),
 ) -> None:
-    temp = Ts.sblock_alloc_buffer((32, 32), dtype="float32")
+    temp = Ts.sblock_alloc_tensor((32, 32), dtype="float32")
     for i, j, k in T.grid(32, 32, 32):
         with Ts.sblock("multiply"):
             vi, vj, vk = Ts.axis.remap("SSR", [i, j, k])
@@ -90,14 +90,14 @@ def matmul_bias_fp32_before(
             D[vi, vj] = temp[vi, vj] + C[vi, vj]
 
 
-@Ts.prim_func
+@Ts.function
 def matmul_bias_fp32_expected(
-    A: T.Buffer((32, 32), "float32"),
-    B: T.Buffer((32, 32), "float32"),
-    C: T.Buffer((32, 32), "float32"),
-    D: T.Buffer((32, 32), "float32"),
+    A: T.Tensor((32, 32), "float32"),
+    B: T.Tensor((32, 32), "float32"),
+    C: T.Tensor((32, 32), "float32"),
+    D: T.Tensor((32, 32), "float32"),
 ) -> None:
-    temp = Ts.sblock_alloc_buffer((32, 32), dtype="float32")
+    temp = Ts.sblock_alloc_tensor((32, 32), dtype="float32")
     for i, j, k in T.grid(32, 32, 32):
         with Ts.sblock("multiply"):
             vi, vj, vk = Ts.axis.remap("SSR", [i, j, k])
@@ -108,15 +108,15 @@ def matmul_bias_fp32_expected(
             D[vi, vj] = D[vi, vj] + A[vi, vk] * B[vj, vk]
 
 
-@Ts.prim_func
+@Ts.function
 def matmul_bias_multiple_epilogue_before(
-    A: T.Buffer((16, 16), "int8"),
-    B: T.Buffer((16, 16), "int8"),
-    C: T.Buffer((16, 16), "int32"),
-    D: T.Buffer((16, 16), "int32"),
-    E: T.Buffer((16, 16), "int32"),
+    A: T.Tensor((16, 16), "int8"),
+    B: T.Tensor((16, 16), "int8"),
+    C: T.Tensor((16, 16), "int32"),
+    D: T.Tensor((16, 16), "int32"),
+    E: T.Tensor((16, 16), "int32"),
 ) -> None:
-    temp = Ts.sblock_alloc_buffer((16, 16), dtype="int32")
+    temp = Ts.sblock_alloc_tensor((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
         with Ts.sblock("multiply"):
             vi, vj, vk = Ts.axis.remap("SSR", [i, j, k])
@@ -133,15 +133,15 @@ def matmul_bias_multiple_epilogue_before(
             E[vi, vj] = temp[vi, vj] + C[vi, vj]
 
 
-@Ts.prim_func
+@Ts.function
 def matmul_bias_multiple_epilogue_expected(
-    A: T.Buffer((16, 16), "int8"),
-    B: T.Buffer((16, 16), "int8"),
-    C: T.Buffer((16, 16), "int32"),
-    D: T.Buffer((16, 16), "int32"),
-    E: T.Buffer((16, 16), "int32"),
+    A: T.Tensor((16, 16), "int8"),
+    B: T.Tensor((16, 16), "int8"),
+    C: T.Tensor((16, 16), "int32"),
+    D: T.Tensor((16, 16), "int32"),
+    E: T.Tensor((16, 16), "int32"),
 ) -> None:
-    temp = Ts.sblock_alloc_buffer((16, 16), dtype="int32")
+    temp = Ts.sblock_alloc_tensor((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
         with Ts.sblock("multiply"):
             vi, vj, vk = Ts.axis.remap("SSR", [i, j, k])
@@ -217,16 +217,16 @@ def test_fuse_reduction_epilogue_multiple_epilogue():
     assert mod is not None
 
 
-@Ts.prim_func
+@Ts.function
 def matmul_bias_invalid_multiple_use_before(
-    A: T.Buffer((16, 16), "int8"),
-    B: T.Buffer((16, 16), "int8"),
-    C1: T.Buffer((16, 16), "int32"),
-    C2: T.Buffer((16, 16), "int32"),
-    D: T.Buffer((16, 16), "int32"),
+    A: T.Tensor((16, 16), "int8"),
+    B: T.Tensor((16, 16), "int8"),
+    C1: T.Tensor((16, 16), "int32"),
+    C2: T.Tensor((16, 16), "int32"),
+    D: T.Tensor((16, 16), "int32"),
 ) -> None:
     """Epilogue uses the reduction result twice; fusion must be rejected."""
-    temp = Ts.sblock_alloc_buffer((16, 16), dtype="int32")
+    temp = Ts.sblock_alloc_tensor((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
         with Ts.sblock("multiply"):
             vi, vj, vk = Ts.axis.remap("SSR", [i, j, k])
@@ -247,15 +247,15 @@ def test_fuse_reduction_epilogue_reject_multiple_use():
         sch.fuse_reduction_epilogue("multiply", "bad_epilogue")
 
 
-@Ts.prim_func
+@Ts.function
 def matmul_bias_invalid_scaling_before(
-    A: T.Buffer((16, 16), "int8"),
-    B: T.Buffer((16, 16), "int8"),
-    C: T.Buffer((16, 16), "int32"),
-    D: T.Buffer((16, 16), "int32"),
+    A: T.Tensor((16, 16), "int8"),
+    B: T.Tensor((16, 16), "int8"),
+    C: T.Tensor((16, 16), "int32"),
+    D: T.Tensor((16, 16), "int32"),
 ) -> None:
     """Epilogue scales the reduction result; fusion must be rejected."""
-    temp = Ts.sblock_alloc_buffer((16, 16), dtype="int32")
+    temp = Ts.sblock_alloc_tensor((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
         with Ts.sblock("multiply"):
             vi, vj, vk = Ts.axis.remap("SSR", [i, j, k])

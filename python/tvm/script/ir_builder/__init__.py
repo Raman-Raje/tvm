@@ -16,7 +16,25 @@
 # under the License.
 """Shared TVMScript construction APIs and lazy language variant builders."""
 
-from tvm.ir import DataTypeImm, GenericConst, Range, StringImm, StringType
+from tvm.ir import (
+    Call,
+    DataTypeImm,
+    FuncType,
+    GenericConst,
+    MissingType,
+    Op,
+    PrimType,
+    Range,
+    StringImm,
+    StringType,
+    TensorRegion,
+    TensorRegionType,
+    Tuple,
+    Type,
+    Var,
+    make_node,
+)
+from tvm.ir.type import _init_type_api
 
 from .base import (
     MISSING,
@@ -27,8 +45,8 @@ from .base import (
     with_at_group_,
 )
 from .frame import IRModuleFrame
-from .ir import _get_dialect_builder as __getattr__
 from .ir import (
+    Lambda,
     constexpr,
     dtype,
     dynamic,
@@ -38,6 +56,7 @@ from .ir import (
     module_global_infos,
     module_set_attr,
 )
+from .ir import _get_dialect_builder as __getattr__
 from .parser_protocol import (
     check_well_formed_,
     decl_function,
@@ -50,13 +69,24 @@ from .parser_protocol import (
 __all__ = [
     "MISSING",
     "AlreadyEmitted",
+    "Call",
     "DataTypeImm",
+    "FuncType",
     "GenericConst",
     "IRBuilder",
     "IRModuleFrame",
+    "Lambda",
+    "MissingType",
+    "Op",
+    "PrimType",
     "Range",
     "StringImm",
     "StringType",
+    "TensorRegion",
+    "TensorRegionType",
+    "Tuple",
+    "Type",
+    "Var",
     "at_",
     "check_well_formed_",
     "constexpr",
@@ -64,6 +94,7 @@ __all__ = [
     "dtype",
     "dynamic",
     "ir_module",
+    "make_node",
     "meta_var",
     "module_attrs",
     "module_get_attr",
@@ -74,3 +105,6 @@ __all__ = [
     "resolve_global_info_args",
     "with_at_group_",
 ]
+
+
+_init_type_api("ir", __name__)

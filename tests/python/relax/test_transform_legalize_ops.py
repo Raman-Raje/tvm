@@ -46,11 +46,11 @@ def test_customize_legalize():
         @R.function
         def main(x: R.Tensor((1, 2, 3), "float32"), y: R.Tensor((4, 3, 2, 1), "float32")) -> R.Tensor((4, 3, 2, 3), "float32"):
             cls = Expected
-            gv = R.call_tir(cls.add, (y, x), R.Tensor((4, 3, 2, 3), dtype="float32"))
+            gv = R.call_tir(cls.add, (y, x), ty_args=[R.Tensor((4, 3, 2, 3), dtype="float32")])
             return gv
 
-        @Ts.prim_func(private=True)
-        def add(rxplaceholder_1: T.Buffer((T.int64(4), T.int64(3), T.int64(2), T.int64(1)), "float32"), rxplaceholder: T.Buffer((T.int64(1), T.int64(2), T.int64(3)), "float32"), T_add: T.Buffer((T.int64(4), T.int64(3), T.int64(2), T.int64(3)), "float32")):
+        @Ts.function(private=True)
+        def add(rxplaceholder_1: T.Tensor((T.int64(4), T.int64(3), T.int64(2), T.int64(1)), "float32"), rxplaceholder: T.Tensor((T.int64(1), T.int64(2), T.int64(3)), "float32"), T_add: T.Tensor((T.int64(4), T.int64(3), T.int64(2), T.int64(3)), "float32")):
             T.func_attr({"tirx.noalias": True})
             for i0, i1, i2, i3 in T.grid(T.int64(4), T.int64(3), T.int64(2), T.int64(3)):
                 with Ts.sblock("T_add"):
@@ -78,8 +78,8 @@ def test_legalize_multiple_types_of_call():
             gv = R.multiply(x, R.const(2.0, "float32"))
             return gv
 
-        @Ts.prim_func(private=True)
-        def identity(rxplaceholder: T.Buffer((T.int64(3), T.int64(3)), "float32"), T_id: T.Buffer((T.int64(3), T.int64(3)), "float32")):
+        @Ts.function(private=True)
+        def identity(rxplaceholder: T.Tensor((T.int64(3), T.int64(3)), "float32"), T_id: T.Tensor((T.int64(3), T.int64(3)), "float32")):
             for ax0, ax1 in T.grid(T.int64(3), T.int64(3)):
                 with Ts.sblock("T_add"):
                     v_ax0, v_ax1 = Ts.axis.remap("SS", [ax0, ax1])
@@ -91,7 +91,7 @@ def test_legalize_multiple_types_of_call():
         def main(x: R.Tensor((3, 3), "float32")):
             cls = Before
             gv: R.Tensor((3, 3), "float32") = cls.mul2(x)
-            gv1 = R.call_tir(cls.identity, gv, R.Tensor((3, 3), dtype="float32"))
+            gv1 = R.call_tir(cls.identity, gv, ty_args=[R.Tensor((3, 3), dtype="float32")])
             gv2 = R.multiply(gv1, R.const(2.0, "float32"))
             return gv2
 
@@ -100,11 +100,11 @@ def test_legalize_multiple_types_of_call():
         @R.function
         def mul2(x: R.Tensor((3, 3), dtype="float32")) -> R.Tensor((3, 3), dtype="float32"):
             cls = Expected
-            gv = R.call_tir(cls.multiply, (x,), R.Tensor((3, 3), dtype="float32"))
+            gv = R.call_tir(cls.multiply, (x,), ty_args=[R.Tensor((3, 3), dtype="float32")])
             return gv
 
-        @Ts.prim_func(private=True)
-        def identity(rxplaceholder: T.Buffer((T.int64(3), T.int64(3)), "float32"), T_id: T.Buffer((T.int64(3), T.int64(3)), "float32")):
+        @Ts.function(private=True)
+        def identity(rxplaceholder: T.Tensor((T.int64(3), T.int64(3)), "float32"), T_id: T.Tensor((T.int64(3), T.int64(3)), "float32")):
             for ax0, ax1 in T.grid(T.int64(3), T.int64(3)):
                 with Ts.sblock("T_add"):
                     v_ax0, v_ax1 = Ts.axis.remap("SS", [ax0, ax1])
@@ -112,8 +112,8 @@ def test_legalize_multiple_types_of_call():
                     Ts.writes(T_id[v_ax0, v_ax1])
                     T_id[v_ax0, v_ax1] = rxplaceholder[v_ax0, v_ax1]
 
-        @Ts.prim_func(private=True)
-        def multiply(rxplaceholder: T.Buffer((T.int64(3), T.int64(3)), "float32"), T_multiply: T.Buffer((T.int64(3), T.int64(3)), "float32")):
+        @Ts.function(private=True)
+        def multiply(rxplaceholder: T.Tensor((T.int64(3), T.int64(3)), "float32"), T_multiply: T.Tensor((T.int64(3), T.int64(3)), "float32")):
             T.func_attr({"tirx.noalias": True})
             for ax0, ax1 in T.grid(T.int64(3), T.int64(3)):
                 with Ts.sblock("T_multiply"):
@@ -126,8 +126,8 @@ def test_legalize_multiple_types_of_call():
         def main(x1: R.Tensor((3, 3), dtype="float32")) -> R.Tensor((3, 3), dtype="float32"):
             cls = Expected
             gv1: R.Tensor((3, 3), dtype="float32") = cls.mul2(x1)
-            gv11 = R.call_tir(cls.identity, gv1, R.Tensor((3, 3), dtype="float32"))
-            gv2 = R.call_tir(cls.multiply, (gv11,), R.Tensor((3, 3), dtype="float32"))
+            gv11 = R.call_tir(cls.identity, gv1, ty_args=[R.Tensor((3, 3), dtype="float32")])
+            gv2 = R.call_tir(cls.multiply, (gv11,), ty_args=[R.Tensor((3, 3), dtype="float32")])
             return gv2
     # fmt: on
 
@@ -193,10 +193,10 @@ def test_legalize_scalar_data_type_preserve():
 
     @tvm.script.ir_module
     class Expected0:
-        @Ts.prim_func(private=True)
+        @Ts.function(private=True)
         def multiply(
-            rxplaceholder: T.Buffer((T.int64(3), T.int64(3)), "float16"),
-            T_multiply: T.Buffer((T.int64(3), T.int64(3)), "float16"),
+            rxplaceholder: T.Tensor((T.int64(3), T.int64(3)), "float16"),
+            T_multiply: T.Tensor((T.int64(3), T.int64(3)), "float16"),
         ):
             T.func_attr({"tirx.noalias": True})
             # with Ts.sblock("root"):
@@ -212,15 +212,15 @@ def test_legalize_scalar_data_type_preserve():
         @R.function
         def main(x: R.Tensor((3, 3), dtype="float16")) -> R.Tensor((3, 3), dtype="float16"):
             cls = Expected0
-            gv = R.call_tir(cls.multiply, (x,), out_ty=R.Tensor((3, 3), dtype="float16"))
+            gv = R.call_tir(cls.multiply, (x,), ty_args=[R.Tensor((3, 3), dtype="float16")])
             return gv
 
     @tvm.script.ir_module
     class Expected1:
-        @Ts.prim_func(private=True)
+        @Ts.function(private=True)
         def multiply(
-            rxplaceholder: T.Buffer((T.int64(3), T.int64(3)), "uint8"),
-            T_multiply: T.Buffer((T.int64(3), T.int64(3)), "uint8"),
+            rxplaceholder: T.Tensor((T.int64(3), T.int64(3)), "uint8"),
+            T_multiply: T.Tensor((T.int64(3), T.int64(3)), "uint8"),
         ):
             T.func_attr({"tirx.noalias": True})
             # with Ts.sblock("root"):
@@ -234,15 +234,15 @@ def test_legalize_scalar_data_type_preserve():
         @R.function
         def main(x: R.Tensor((3, 3), dtype="uint8")) -> R.Tensor((3, 3), dtype="uint8"):
             cls = Expected1
-            gv = R.call_tir(cls.multiply, (x,), out_ty=R.Tensor((3, 3), dtype="uint8"))
+            gv = R.call_tir(cls.multiply, (x,), ty_args=[R.Tensor((3, 3), dtype="uint8")])
             return gv
 
     @tvm.script.ir_module
     class Expected2:
-        @Ts.prim_func(private=True)
+        @Ts.function(private=True)
         def equal(
-            rxplaceholder: T.Buffer((T.int64(3), T.int64(3)), "bool"),
-            T_equal: T.Buffer((T.int64(3), T.int64(3)), "bool"),
+            rxplaceholder: T.Tensor((T.int64(3), T.int64(3)), "bool"),
+            T_equal: T.Tensor((T.int64(3), T.int64(3)), "bool"),
         ):
             T.func_attr({"tirx.noalias": True})
             # with Ts.sblock("root"):
@@ -256,7 +256,7 @@ def test_legalize_scalar_data_type_preserve():
         @R.function
         def main(x: R.Tensor((3, 3), dtype="bool")) -> R.Tensor((3, 3), dtype="bool"):
             cls = Expected2
-            gv = R.call_tir(cls.equal, (x,), out_ty=R.Tensor((3, 3), dtype="bool"))
+            gv = R.call_tir(cls.equal, (x,), ty_args=[R.Tensor((3, 3), dtype="bool")])
             return gv
     # fmt: on
 
@@ -304,11 +304,15 @@ def custom_op(emit_legalization_through_builder):
         activations, weight, bias = call.args
 
         matmul_call = relax.op.matmul(activations, weight)
-        matmul_ty = tvm.ir.Op.get("relax.matmul").get_attr("FInferType")(matmul_call, context)
+        matmul_ty = tvm.ir.Op.get("relax.matmul").get_attr("relax.FInferTypeWithBuilder")(
+            matmul_call, context
+        )
 
         matmul_var = relax.Var("dummy_var", matmul_ty)
         add_call = matmul_var + bias
-        add_ty = tvm.ir.Op.get("relax.add").get_attr("FInferType")(add_call, context)
+        add_ty = tvm.ir.Op.get("relax.add").get_attr("relax.FInferTypeWithBuilder")(
+            add_call, context
+        )
 
         return add_ty
 
@@ -320,7 +324,7 @@ def custom_op(emit_legalization_through_builder):
         return legalized
 
     op_attrs = {
-        "FInferType": infer_ty,
+        "relax.FInferTypeWithBuilder": infer_ty,
         "FLegalize": legalize,
         "FPurity": True,
     }
@@ -363,7 +367,7 @@ def test_legalize_with_vdevice():
 
     This is a regression test.  In previous implementations, Relax
     expressions whose argument types differed only by their `vdevice`
-    would be legalized to use the same `PrimFunc`.
+    would be legalized to use the same `Function`.
 
     """
 
@@ -393,14 +397,14 @@ def test_legalize_with_vdevice():
             B: R.Tensor((32, 32), dtype="float32"),
         ):
             cls = Expected
-            C = R.call_tir(cls.add, (A, B), out_ty=R.Tensor((32, 32), dtype="float32"))
+            C = R.call_tir(cls.add, (A, B), ty_args=[R.Tensor((32, 32), dtype="float32")])
             return C
 
-        @Ts.prim_func(private=True)
+        @Ts.function(private=True)
         def add(
-            A: T.Buffer((T.int64(32), T.int64(32)), "float32"),
-            B: T.Buffer((T.int64(32), T.int64(32)), "float32"),
-            C: T.Buffer((T.int64(32), T.int64(32)), "float32"),
+            A: T.Tensor((T.int64(32), T.int64(32)), "float32"),
+            B: T.Tensor((T.int64(32), T.int64(32)), "float32"),
+            C: T.Tensor((T.int64(32), T.int64(32)), "float32"),
         ):
             T.func_attr({"tirx.noalias": True})
             for (*iters,) in T.grid(T.int64(32), T.int64(32)):
@@ -417,15 +421,15 @@ def test_legalize_with_vdevice():
             C = R.call_tir(
                 cls.add_llvm,
                 (A, B),
-                out_ty=R.Tensor((32, 32), dtype="float32", vdevice="llvm"),
+                ty_args=[R.Tensor((32, 32), dtype="float32", vdevice="llvm")],
             )
             return C
 
-        @Ts.prim_func(private=True)
+        @Ts.function(private=True)
         def add_llvm(
-            A: T.Buffer((T.int64(32), T.int64(32)), "float32"),
-            B: T.Buffer((T.int64(32), T.int64(32)), "float32"),
-            C: T.Buffer((T.int64(32), T.int64(32)), "float32"),
+            A: T.Tensor((T.int64(32), T.int64(32)), "float32"),
+            B: T.Tensor((T.int64(32), T.int64(32)), "float32"),
+            C: T.Tensor((T.int64(32), T.int64(32)), "float32"),
         ):
             T.func_attr({"target": T.target("llvm"), "tirx.noalias": True})
             for (*iters,) in T.grid(T.int64(32), T.int64(32)):
